@@ -1,0 +1,145 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-pipeline
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-pipeline
+  template:
+    metadata:
+      labels:
+        app: sentinel-pipeline
+    spec:
+      containers:
+        - name: pipeline
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          command: ["python", "-m", "sentinel.pipeline"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: casino-db
+                  key: database-url
+            - name: KAFKA_BOOTSTRAP
+              value: sentinel-kafka-kafka-bootstrap:9092
+            - name: DIRECT_POLL
+              value: "false"
+            - name: KAFKA_OPTIONAL
+              value: "true"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-simulator
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-simulator
+  template:
+    metadata:
+      labels:
+        app: sentinel-simulator
+    spec:
+      containers:
+        - name: simulator
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          command: ["python", "-m", "sentinel.simulator"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: casino-db
+                  key: database-url
+            - name: SIMULATOR_INTERVAL_SEC
+              value: "3"
+            - name: SIMULATOR_ENABLED
+              value: "true"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-api
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-api
+  template:
+    metadata:
+      labels:
+        app: sentinel-api
+    spec:
+      containers:
+        - name: api
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          command: ["python", "-m", "sentinel.api"]
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: casino-db
+                  key: database-url
+            - name: KAFKA_BOOTSTRAP
+              value: sentinel-kafka-kafka-bootstrap:9092
+            - name: DATA_MODE
+              value: auto
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 8
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-api
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-api
+spec:
+  selector:
+    app: sentinel-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

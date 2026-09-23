@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: casino-db
+  namespace: casino-sentinel
+type: Opaque
+stringData:
+  database-name: casino
+  database-user: casino
+  database-password: casino
+  admin-password: casinoadmin
+  debezium-user: debezium
+  debezium-password: dbz
+  database-url: postgresql://casino:casino@casino-db:5432/casino
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: casino-db
+  namespace: casino-sentinel
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: casino-db
+  namespace: casino-sentinel
+  labels:
+    app: casino-db
+spec:
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+  selector:
+    app: casino-db
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: casino-db
+  namespace: casino-sentinel
+  labels:
+    app: casino-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: casino-db
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: casino-db
+    spec:
+      containers:
+        - name: postgresql
+          image: quay.io/sclorg/postgresql-16-c9s:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: casino-db
+                  key: database-user
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: casino-db
+                  key: database-password
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: casino-db
+                  key: database-name
+            - name: POSTGRESQL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: casino-db
+                  key: admin-password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+            - name: init
+              mountPath: /opt/app-root/src/postgresql-init
+            - name: cfg
+              mountPath: /opt/app-root/src/postgresql-cfg
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: casino-db
+        - name: init
+          configMap:
+            name: casino-db-init
+        - name: cfg
+          configMap:
+            name: casino-db-cfg

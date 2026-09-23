@@ -1,0 +1,47 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnector
+metadata:
+  name: casino-postgres-connector
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-connect
+spec:
+  class: io.debezium.connector.postgresql.PostgresConnector
+  tasksMax: 1
+  config:
+    database.hostname: casino-db.casino-sentinel.svc
+    database.port: "5432"
+    database.user: debezium
+    database.password: dbz
+    database.dbname: casino
+    topic.prefix: casino.cdc
+    plugin.name: pgoutput
+    slot.name: casino_sentinel
+    publication.name: dbz_publication
+    publication.autocreate.mode: disabled
+    table.include.list: public.players,public.player_accounts,public.kyc_profiles,public.transactions,public.wagers,public.gaming_sessions,public.chip_transactions,public.cage_transactions,public.payment_methods,public.devices
+    snapshot.mode: initial
+    tombstones.on.delete: "false"
+    decimal.handling.mode: double
+    time.precision.mode: adaptive_time_microseconds
+    # topic.prefix "casino.cdc" contains a dot, so the default Debezium name is
+    # casino.cdc.public.<table>. The first capture must be (.*) not ([^.]+).
+    transforms: unwrap,reroute,chips,cage,kyc
+    transforms.unwrap.type: io.debezium.transforms.ExtractNewRecordState
+    transforms.unwrap.add.fields: op,table
+    transforms.reroute.type: org.apache.kafka.connect.transforms.RegexRouter
+    transforms.reroute.regex: casino\.cdc\.public\.(.*)
+    transforms.reroute.replacement: casino.cdc.$1
+    transforms.chips.type: org.apache.kafka.connect.transforms.RegexRouter
+    transforms.chips.regex: casino\.cdc\.chip_transactions
+    transforms.chips.replacement: casino.cdc.chips
+    transforms.cage.type: org.apache.kafka.connect.transforms.RegexRouter
+    transforms.cage.regex: casino\.cdc\.cage_transactions
+    transforms.cage.replacement: casino.cdc.cage
+    transforms.kyc.type: org.apache.kafka.connect.transforms.RegexRouter
+    transforms.kyc.regex: casino\.cdc\.kyc_profiles
+    transforms.kyc.replacement: casino.cdc.kyc
+    key.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable: "false"
+    value.converter.schemas.enable: "false"

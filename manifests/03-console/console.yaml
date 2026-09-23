@@ -1,0 +1,14 @@
+# Placeholders __CLUSTER_DOMAIN__ and __NAMESPACE__ are replaced by deploy.sh.
+apiVersion: console.streamshub.github.com/v1alpha1
+kind: Console
+metadata:
+  name: sentinel-console
+spec:
+  hostname: sentinel-console.__CLUSTER_DOMAIN__
+  kafkaClusters:
+    - name: sentinel-kafka
+      namespace: __NAMESPACE__
+      listener: secure
+      credentials:
+        kafkaUser:
+          name: console-user

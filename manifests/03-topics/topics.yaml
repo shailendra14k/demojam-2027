@@ -1,0 +1,133 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-players
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.players
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-transactions
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.transactions
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-wagers
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.wagers
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-chips
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.chips
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-cage
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.cage
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-kyc
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.kyc
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-events-normalized
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.events.normalized
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-events-enriched
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.events.enriched
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: aml-features
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: aml.features
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: aml-alerts
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: aml.alerts
+  partitions: 3
+  replicas: 1
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: aml-player-risk-profiles
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: aml.player.risk_profiles
+  partitions: 3
+  replicas: 1
+  config:
+    cleanup.policy: compact

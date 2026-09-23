@@ -1,0 +1,8 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: sentinel-debezium-connect
+  namespace: casino-sentinel
+spec:
+  lookupPolicy:
+    local: true

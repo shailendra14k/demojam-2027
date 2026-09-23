@@ -1,0 +1,32 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnect
+metadata:
+  name: sentinel-connect
+  namespace: casino-sentinel
+  annotations:
+    strimzi.io/use-connector-resources: "true"
+spec:
+  replicas: 1
+  version: 4.2.0
+  bootstrapServers: sentinel-kafka-kafka-bootstrap:9092
+  groupId: sentinel-connect
+  configStorageTopic: sentinel-connect-configs
+  statusStorageTopic: sentinel-connect-status
+  offsetStorageTopic: sentinel-connect-offsets
+  config:
+    config.storage.replication.factor: 1
+    offset.storage.replication.factor: 1
+    status.storage.replication.factor: 1
+    key.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable: false
+    value.converter.schemas.enable: false
+  build:
+    output:
+      type: imagestream
+      image: sentinel-debezium-connect:latest
+    plugins:
+      - name: debezium-connector-postgres
+        artifacts:
+          - type: zip
+            url: https://maven.repository.redhat.com/ga/io/debezium/debezium-connector-postgres/3.4.3.Final-redhat-00001/debezium-connector-postgres-3.4.3.Final-redhat-00001-plugin.zip

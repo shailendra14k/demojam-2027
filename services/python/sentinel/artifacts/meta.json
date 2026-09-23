@@ -1,0 +1,66 @@
+{
+  "feature_names": [
+    "amount",
+    "amount_log",
+    "is_cash",
+    "is_wire",
+    "cash_in_24h",
+    "cash_out_24h",
+    "txn_count_1h",
+    "txn_count_24h",
+    "max_single_1h",
+    "cage_visits_24h",
+    "total_wagered_24h",
+    "wager_to_buyin_ratio",
+    "unique_locations_24h",
+    "unique_payment_methods_24h",
+    "just_below_10k_count_24h",
+    "wire_in_24h",
+    "wire_out_24h",
+    "month_volume",
+    "pep_flag",
+    "watchlist_hit",
+    "prior_alerts",
+    "kyc_risk_ordinal"
+  ],
+  "model": "XGBClassifier",
+  "tree_method": "hist",
+  "device": "cpu",
+  "xgboost_roc_auc": 0.9405,
+  "xgboost_pr_auc": 0.919,
+  "n_train": 19200,
+  "top_features": [
+    [
+      "unique_payment_methods_24h",
+      0.3095083236694336
+    ],
+    [
+      "amount",
+      0.23144304752349854
+    ],
+    [
+      "amount_log",
+      0.17463937401771545
+    ],
+    [
+      "wager_to_buyin_ratio",
+      0.06826286762952805
+    ],
+    [
+      "total_wagered_24h",
+      0.06331133097410202
+    ],
+    [
+      "cage_visits_24h",
+      0.04591086506843567
+    ],
+    [
+      "txn_count_1h",
+      0.02822468802332878
+    ],
+    [
+      "txn_count_24h",
+      0.02583910897374153
+    ]
+  ]
+}

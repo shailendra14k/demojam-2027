@@ -1,0 +1,24 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: amq-streams-console
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: amq-streams-console
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  config:
+    env:
+      - name: JAVA_OPTS_APPEND
+        value: "-XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=70.0"
+      - name: QUARKUS_VERTX_MAX_EVENT_LOOP_EXECUTE_TIME
+        value: "60S"
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 2Gi
