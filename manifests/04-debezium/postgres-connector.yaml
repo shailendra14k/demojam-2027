@@ -24,8 +24,11 @@ spec:
     tombstones.on.delete: "false"
     decimal.handling.mode: double
     time.precision.mode: adaptive_time_microseconds
+    # From B: keep connector healthy under idle / topic.auto.create=false.
+    heartbeat.interval.ms: "10000"
     # topic.prefix "casino.cdc" contains a dot, so the default Debezium name is
     # casino.cdc.public.<table>. The first capture must be (.*) not ([^.]+).
+    # A keeps ExtractNewRecordState + reroute (pipeline expects flat topics).
     transforms: unwrap,reroute,chips,cage,kyc
     transforms.unwrap.type: io.debezium.transforms.ExtractNewRecordState
     transforms.unwrap.add.fields: op,table

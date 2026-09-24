@@ -1,8 +1,12 @@
 FROM registry.access.redhat.com/ubi9/python-311:latest
+# Build context is the casino-sentinel repo root:
+#   oc start-build sentinel-python --from-dir=.
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/opt/app-root/src:/opt/app-root/src/services/aml-rules:/opt/app-root/src/services/feature-engine:/opt/app-root/src/services/risk-engine:/opt/app-root/src/services/explainability:/opt/app-root/src/ai/adapter:/opt/app-root/src/sql/scenarios \
+    MODEL_DIR=/opt/app-root/src/model/artifacts
 
 # XGBoost needs libgomp at runtime. This image is full UBI (dnf), not ubi-minimal (microdnf).
 USER 0
@@ -11,13 +15,21 @@ USER 1001
 
 WORKDIR /opt/app-root/src
 
-COPY --chown=1001:0 requirements.txt .
+COPY --chown=1001:0 services/python/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=1001:0 sentinel ./sentinel
+COPY --chown=1001:0 services/python/sentinel ./sentinel
+COPY --chown=1001:0 services/python/casino_common ./casino_common
+COPY --chown=1001:0 services/python/services ./services
+COPY --chown=1001:0 services/python/backend ./backend
+COPY --chown=1001:0 services/python/ai ./ai
+COPY --chown=1001:0 sql/scenarios ./sql/scenarios
+
+# Offline-trained artifacts only (no training code in the image).
+COPY --chown=1001:0 model/artifacts/ ./model/artifacts/
 
 EXPOSE 8080
 USER 1001
 
-# Default process; Deployments override this.
-CMD ["python", "-m", "sentinel.api"]
+# SERVICE_NAME → microservice main.py; else backend API on 8080.
+CMD ["sh", "-c", "if [ -n \"$SERVICE_NAME\" ]; then python services/$SERVICE_NAME/main.py; else python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080; fi"]

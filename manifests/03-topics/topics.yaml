@@ -1,3 +1,4 @@
+# Topic names stay A's (casino.cdc.*). Retention / DLQ / heartbeat deltas from B.
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
@@ -9,6 +10,9 @@ spec:
   topicName: casino.cdc.players
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -21,6 +25,9 @@ spec:
   topicName: casino.cdc.transactions
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -33,6 +40,9 @@ spec:
   topicName: casino.cdc.wagers
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -45,6 +55,9 @@ spec:
   topicName: casino.cdc.chips
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -57,6 +70,9 @@ spec:
   topicName: casino.cdc.cage
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -69,6 +85,69 @@ spec:
   topicName: casino.cdc.kyc
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-player-accounts
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.player_accounts
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-gaming-sessions
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.gaming_sessions
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-payment-methods
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.payment_methods
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-cdc-devices
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.cdc.devices
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -81,6 +160,9 @@ spec:
   topicName: casino.events.normalized
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -93,6 +175,9 @@ spec:
   topicName: casino.events.enriched
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -105,6 +190,84 @@ spec:
   topicName: aml.features
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: aml-rules-hits
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: aml.rules.hits
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: aml-ml-scores
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: aml.ml.scores
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: aml-behavioral-scores
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: aml.behavioral.scores
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: aml-risk-assessments
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: aml.risk.assessments
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: aml-explanations
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: aml.explanations
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -117,6 +280,9 @@ spec:
   topicName: aml.alerts
   partitions: 3
   replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
@@ -131,3 +297,33 @@ spec:
   replicas: 1
   config:
     cleanup.policy: compact
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: casino-dlq
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: casino.dlq
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: debezium-heartbeat-casino-cdc
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  topicName: __debezium-heartbeat.casino.cdc
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: "86400000"
+    cleanup.policy: delete

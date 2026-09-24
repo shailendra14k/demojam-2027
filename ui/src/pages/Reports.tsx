@@ -1,36 +1,43 @@
-import { useEffect, useState } from "react";
-import { api } from "../api";
+import { useEffect, useState } from 'react'
+import { api } from '../api'
 
+/** CTR / SAR filing tracker from live alerts — honest zeros when cold. */
 export default function Reports() {
-  const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [stats, setStats] = useState<any>(null)
+
   useEffect(() => {
-    api.reports().then(setData).catch(() => undefined);
-  }, []);
-  const items = (data?.items as Record<string, unknown>[]) || [];
+    Promise.all([api.alerts(), api.sars(), api.cases()])
+      .then(([alerts, sars, cases]) => {
+        const items = alerts.items || []
+        const ctr = items.filter((a: any) =>
+          (a.rule_hits || []).some((h: any) => h.rule_id === 'AML-009' || String(h.rule_name || '').includes('CTR')),
+        ).length
+        const critical = items.filter((a: any) => String(a.risk_level).toUpperCase() === 'CRITICAL').length
+        setStats({
+          alerts: items.length,
+          ctrRelated: ctr,
+          critical,
+          sarDrafts: (sars.items || []).length,
+          openCases: (cases.items || []).length,
+        })
+      })
+      .catch(console.error)
+  }, [])
+
   return (
-    <>
-      <div className="page-head"><div><h2>Reports</h2><p>CTR and SAR filing tracker</p></div></div>
-      <div className="kpis" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
-        <article className="kpi"><div className="label">CTRs pending</div><div className="value">{(data?.ctr as { pending?: number })?.pending ?? "—"}</div></article>
-        <article className="kpi"><div className="label">SARs pending</div><div className="value">{(data?.sar as { pending?: number })?.pending ?? "—"}</div></article>
-        <article className="kpi"><div className="label">Filed today</div><div className="value">{(data?.ctr as { filedToday?: number })?.filedToday ?? "—"}</div></article>
-      </div>
-      <div className="card table-page">
-        <table>
-          <thead><tr><th>ID</th><th>Type</th><th>Player</th><th>Amount</th><th>Status</th></tr></thead>
-          <tbody>
-            {items.map((r) => (
-              <tr key={String(r.id)}>
-                <td className="mono">{String(r.id)}</td>
-                <td>{String(r.type)}</td>
-                <td>{String(r.playerId)}</td>
-                <td className="mono">${Number(r.amount || 0).toLocaleString()}</td>
-                <td>{String(r.status)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
+    <section>
+      <h2>Reports</h2>
+      <p className="muted">Filing tracker from live alert / case / SAR data (no padded demo KPIs).</p>
+      {!stats && <p className="muted">Loading…</p>}
+      {stats && (
+        <ul>
+          <li>Open / recent alerts: <strong>{stats.alerts}</strong></li>
+          <li>CTR-related (AML-009): <strong>{stats.ctrRelated}</strong></li>
+          <li>Critical alerts: <strong>{stats.critical}</strong></li>
+          <li>SAR drafts: <strong>{stats.sarDrafts}</strong></li>
+          <li>Open cases: <strong>{stats.openCases}</strong></li>
+        </ul>
+      )}
+    </section>
+  )
 }

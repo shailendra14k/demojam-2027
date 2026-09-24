@@ -1,3 +1,5 @@
+# AMQ Streams 3.x / Strimzi 0.46+: KRaft-only — requires KafkaNodePool (no ZooKeeper).
+# Resource limits / deleteClaim / auto.create.topics from casino-sentinel-merged (B); names stay A's.
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata:
@@ -16,7 +18,15 @@ spec:
       - id: 0
         type: persistent-claim
         size: 20Gi
+        deleteClaim: true
         kraftMetadata: shared
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
 ---
 apiVersion: kafka.strimzi.io/v1
 kind: Kafka
@@ -47,6 +57,7 @@ spec:
       transaction.state.log.min.isr: 1
       default.replication.factor: 1
       min.insync.replicas: 1
+      auto.create.topics.enable: "false"
       num.partitions: 3
   entityOperator:
     topicOperator: {}

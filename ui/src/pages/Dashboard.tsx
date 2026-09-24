@@ -1,194 +1,427 @@
-import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
-import type { Customer, Kpis, PipelineItem, StreamEvent } from "../types";
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
+import { api } from '../api'
 
-function money(n: number) {
-  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const SEVERITY_COLORS: Record<string, string> = {
+  CRITICAL: '#f43f5e',
+  HIGH: '#fb7185',
+  MEDIUM: '#f59e0b',
+  LOW: '#2dd4bf',
+}
+
+const CHART_TEAL = '#2dd4bf'
+const CHART_AMBER = '#f59e0b'
+const CHART_MUTED = '#64748b'
+const TOOLTIP_STYLE = {
+  background: '#0f172a',
+  border: '1px solid rgba(148,163,184,0.25)',
+  borderRadius: 0,
+  fontSize: 12,
+  fontFamily: 'IBM Plex Mono, monospace',
+}
+
+function useCountUp(target: number, duration = 700) {
+  const [value, setValue] = useState(0)
+  const fromRef = useRef(0)
+  useEffect(() => {
+    if (!Number.isFinite(target)) return
+    let raf = 0
+    const start = performance.now()
+    const from = fromRef.current
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration)
+      const eased = 1 - Math.pow(1 - t, 3)
+      const next = from + (target - from) * eased
+      setValue(next)
+      if (t < 1) raf = requestAnimationFrame(tick)
+      else fromRef.current = target
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [target, duration])
+  return value
+}
+
+function MetricValue({
+  value,
+  decimals = 0,
+  suffix = '',
+}: {
+  value: number | null | undefined
+  decimals?: number
+  suffix?: string
+}) {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : 0
+  const animated = useCountUp(n)
+  const display =
+    decimals > 0 ? animated.toFixed(decimals) : Math.round(animated).toLocaleString()
+  return (
+    <div className="metric">
+      {display}
+      {suffix}
+    </div>
+  )
+}
+
+function StatusPill({ ok, label }: { ok?: boolean; label: string }) {
+  return <span className={`status-pill ${ok ? 'ok' : 'bad'}`}>{label}</span>
 }
 
 export default function Dashboard() {
-  const [kpis, setKpis] = useState<Kpis | null>(null);
-  const [events, setEvents] = useState<StreamEvent[]>([]);
-  const [pipeline, setPipeline] = useState<PipelineItem[]>([]);
-  const [bars, setBars] = useState<{ type: string; count: number }[]>([]);
-  const [risk, setRisk] = useState<Customer[]>([]);
-  const [busy, setBusy] = useState(false);
-
-  async function refresh() {
-    const [k, e, s, b, c] = await Promise.all([
-      api.kpis(),
-      api.events(),
-      api.status(),
-      api.alertsByType(),
-      api.customers(),
-    ]);
-    setKpis(k);
-    setEvents(e.items);
-    setPipeline(s.pipeline);
-    setBars(b.items);
-    setRisk(c.items.slice(0, 4));
-  }
+  const [data, setData] = useState<any>(null)
+  const [events, setEvents] = useState<any[]>([])
+  const [tick, setTick] = useState(0)
 
   useEffect(() => {
-    refresh().catch(() => undefined);
-    const id = setInterval(() => refresh().catch(() => undefined), 2500);
-    return () => clearInterval(id);
-  }, []);
+    const load = () => {
+      api.summary().then(setData).catch(console.error)
+      api
+        .events()
+        .then((r) => setEvents((r.items || []).slice(0, 8)))
+        .catch(console.error)
+      setTick((t) => t + 1)
+    }
+    load()
+    const t = setInterval(load, 5000)
+    return () => clearInterval(t)
+  }, [])
 
-  useEffect(() => {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/api/v1/ws/live`);
-    ws.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-        if (data.type === "event" && data.item) {
-          setEvents((prev) => [data.item, ...prev].slice(0, 40));
-        }
-      } catch {
-        /* ignore */
-      }
-    };
-    return () => ws.close();
-  }, []);
+  const stages = data?.pipeline_stages?.length
+    ? data.pipeline_stages
+    : [
+        { name: 'DATABASE', ok: true },
+        { name: 'CDC', ok: true },
+        { name: 'STREAM', ok: true },
+        { name: 'ENRICH', ok: true },
+        { name: 'ANALYZE', ok: true },
+        { name: 'RISK', ok: true },
+        { name: 'ALERT', ok: true },
+      ]
 
-  const maxBar = useMemo(() => Math.max(1, ...bars.map((b) => b.count)), [bars]);
+  const severityData = useMemo(() => {
+    const raw = data?.severity_breakdown || []
+    if (raw.length) return raw.map((d: any) => ({ name: d.level, value: d.count }))
+    return Object.entries(data?.alerts_by_level || {}).map(([name, value]) => ({
+      name,
+      value: Number(value),
+    }))
+  }, [data])
+
+  const volumeData = data?.alert_volume || []
+  const histData = data?.risk_histogram || []
+  const ruleData = (data?.rule_hit_frequency || []).slice(0, 8)
+  const latencySpark = (data?.latency_samples || []).map((v: number, i: number) => ({
+    i: i + 1,
+    ms: v,
+  }))
+
+  const platform = data?.platform || {}
+  const platformRows = [
+    { key: 'postgres', label: 'PostgreSQL', hint: 'Transactional source' },
+    { key: 'debezium', label: 'Debezium CDC', hint: 'Change data capture' },
+    { key: 'kafka_connect', label: 'Kafka Connect', hint: 'AMQ Streams connector' },
+    { key: 'kafka', label: 'Kafka / AMQ Streams', hint: 'Event backbone' },
+    { key: 'feature_engine', label: 'Feature engine', hint: 'Enrichment' },
+    { key: 'aml_rules_ml', label: 'Rules + ML', hint: 'ANALYZE stage' },
+    { key: 'risk_engine', label: 'Risk engine', hint: 'Score aggregation' },
+    { key: 'alert_service', label: 'Alert service', hint: 'Case generation' },
+  ]
+
+  const elevated = events.filter(
+    (e) => ['HIGH', 'CRITICAL', 'MEDIUM'].includes(String(e.risk?.risk_level || '').toUpperCase()),
+  )
 
   return (
-    <>
-      <div className="page-head">
+    <div className="ops-console">
+      <section className="ops-header">
         <div>
-          <h2>AML Command Center</h2>
-          <p>From transaction to suspicion, in seconds — live CDC on AMQ Streams</p>
+          <p className="ops-eyebrow">AML operations · OpenShift CDC path</p>
+          <h2>Investigation console</h2>
+          <p className="ops-sub">
+            Postgres → Debezium → AMQ Streams → enrich → rules/ML → risk → alert
+          </p>
         </div>
-        <div className="row-actions">
-          <button className="btn" onClick={() => refresh()}>Refresh</button>
-          <button
-            className="btn primary"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await api.startScenario("mixed");
-                await refresh();
-              } catch (err) {
-                alert(String(err));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {busy ? "Injecting…" : "Start Scenario"}
-          </button>
+        <div className="ops-meta">
+          <span className="live-dot" />
+          <span className="mono">LIVE · poll {tick}</span>
+          <span className="mono muted">
+            mode {data?.pipeline_mode ?? '—'} · AI {data?.ai_mode ?? '—'} · up{' '}
+            {data?.uptime_seconds ?? 0}s
+          </span>
+        </div>
+      </section>
+
+      <section className="kpi-strip" aria-label="Key performance indicators">
+        <div className="kpi">
+          <h3>Tx / sec</h3>
+          <MetricValue value={data?.tx_per_sec} decimals={3} />
+        </div>
+        <div className="kpi">
+          <h3>Open alerts</h3>
+          <MetricValue value={data?.alerts_open} />
+        </div>
+        <div className="kpi kpi-critical">
+          <h3>Critical</h3>
+          <MetricValue value={data?.alerts_critical} />
+        </div>
+        <div className="kpi">
+          <h3>High-risk players</h3>
+          <MetricValue value={data?.high_risk_players} />
+        </div>
+        <div className="kpi">
+          <h3>Pipeline latency</h3>
+          <MetricValue value={data?.latency_ms} suffix=" ms" />
+        </div>
+        <div className="kpi">
+          <h3>AI / ML latency</h3>
+          <div className="metric metric-sm">
+            {data?.ai_latency_ms ?? '—'}
+            <small>AI {data?.ai_latency_ms ?? '—'} · ML {data?.ml_latency_ms ?? '—'} ms</small>
+          </div>
+        </div>
+        <div className="kpi">
+          <h3>CDC</h3>
+          <StatusPill ok={data?.cdc_ok} label={data?.cdc_ok ? 'OK' : 'DOWN'} />
+          <p className="kpi-detail mono">{data?.cdc_detail || '—'}</p>
+        </div>
+        <div className="kpi">
+          <h3>Kafka</h3>
+          <StatusPill ok={data?.kafka_ok} label={data?.kafka_ok ? 'OK' : 'DOWN'} />
+          <p className="kpi-detail mono">{data?.kafka_detail || '—'}</p>
+        </div>
+      </section>
+
+      <section className="panel pipeline-panel">
+        <div className="panel-head">
+          <h3>Pipeline status</h3>
+          <Link className="text-link" to="/pipeline">
+            Full topology →
+          </Link>
+        </div>
+        <div className="pipeline pipeline-rich">
+          {stages.map((s: any, i: number, arr: any[]) => (
+            <div key={s.name} className="pipe-unit">
+              <div
+                className={`pipe-stage ${s.ok === false ? 'bad' : s.ok === true ? 'ok' : ''}`}
+              >
+                <span className="dot" />
+                <div className="pipe-copy">
+                  <strong>{s.name}</strong>
+                  <span className="mono muted">
+                    {s.detail || '—'}
+                    {s.activity != null ? ` · ${s.activity}` : ''}
+                  </span>
+                </div>
+              </div>
+              {i < arr.length - 1 && <span className="pipe-arrow" aria-hidden />}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="grid ops-grid">
+        <div className="panel span-4">
+          <div className="panel-head">
+            <h3>Alert volume</h3>
+            <span className="muted mono">time series</span>
+          </div>
+          <div className="chart-box">
+            {volumeData.length ? (
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={volumeData}>
+                  <defs>
+                    <linearGradient id="volFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={CHART_TEAL} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={CHART_TEAL} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="t" tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} width={28} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Area type="monotone" dataKey="count" stroke={CHART_TEAL} fill="url(#volFill)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="muted">No volume series yet.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="panel span-4">
+          <div className="panel-head">
+            <h3>Severity mix</h3>
+            <span className="muted mono">risk level</span>
+          </div>
+          <div className="chart-box chart-split">
+            {severityData.length ? (
+              <>
+                <ResponsiveContainer width="48%" height={200}>
+                  <PieChart>
+                    <Pie
+                      data={severityData}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={48}
+                      outerRadius={72}
+                      paddingAngle={2}
+                      stroke="none"
+                    >
+                      {severityData.map((d: any) => (
+                        <Cell key={d.name} fill={SEVERITY_COLORS[d.name] || CHART_TEAL} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <ul className="legend-list">
+                  {severityData.map((d: any) => (
+                    <li key={d.name}>
+                      <span className="swatch" style={{ background: SEVERITY_COLORS[d.name] || CHART_TEAL }} />
+                      <span>{d.name}</span>
+                      <strong className="mono">{d.value}</strong>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="muted">No alerts yet — run a demo scenario.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="panel span-4">
+          <div className="panel-head">
+            <h3>Risk score histogram</h3>
+            <span className="muted mono">0–1</span>
+          </div>
+          <div className="chart-box">
+            {histData.length ? (
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={histData}>
+                  <XAxis dataKey="bucket" tick={{ fill: CHART_MUTED, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} width={28} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Bar dataKey="count" fill={CHART_AMBER} radius={[0, 0, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="muted">No score distribution yet.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="panel span-6">
+          <div className="panel-head">
+            <h3>Rule hit frequency</h3>
+            <span className="muted mono">AML-001…008</span>
+          </div>
+          <div className="chart-box">
+            {ruleData.length ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={ruleData} layout="vertical" margin={{ left: 12 }}>
+                  <XAxis type="number" tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis
+                    type="category"
+                    dataKey="rule_id"
+                    width={72}
+                    tick={{ fill: '#cbd5e1', fontSize: 11, fontFamily: 'IBM Plex Mono' }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Bar dataKey="count" fill={CHART_TEAL} barSize={14} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="muted">No rule hits yet.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="panel span-6">
+          <div className="panel-head">
+            <h3>Latency samples</h3>
+            <span className="muted mono">pipeline ms</span>
+          </div>
+          <div className="chart-box">
+            {latencySpark.length ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <AreaChart data={latencySpark}>
+                  <XAxis dataKey="i" hide />
+                  <YAxis tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} width={36} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Area type="stepAfter" dataKey="ms" stroke="#38bdf8" fill="rgba(56,189,248,0.15)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="muted">Latency samples unavailable.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="panel span-7">
+          <div className="panel-head">
+            <h3>Live feed · elevated</h3>
+            <Link className="text-link" to="/live">
+              Open Live Monitor →
+            </Link>
+          </div>
+          <div className="feed-list">
+            {(elevated.length ? elevated : events).slice(0, 6).map((e, i) => (
+              <div key={e.event?.event_id || i} className="feed-row" style={{ animationDelay: `${i * 60}ms` }}>
+                <span className={`badge ${e.risk?.risk_level}`}>{e.risk?.risk_level || '—'}</span>
+                <span className="mono muted">{String(e.event?.timestamp || '').slice(11, 19)}</span>
+                <Link className="mono" to={`/player/${e.event?.player_id || ''}`}>
+                  {String(e.event?.player_id || '—').slice(0, 8)}
+                </Link>
+                <span className="mono">{e.risk?.final_score?.toFixed?.(2) ?? '—'}</span>
+                <span className="feed-rules mono muted">
+                  {(e.rules?.hits || e.risk?.rule_hits || []).map((h: any) => h.rule_id).join(' ') || '—'}
+                </span>
+              </div>
+            ))}
+            {!events.length && <p className="muted">Waiting for scored CDC events…</p>}
+          </div>
+        </div>
+
+        <div className="panel span-5">
+          <div className="panel-head">
+            <h3>Platform health</h3>
+            <span className="muted mono">
+              model {platform.model_loaded ? 'loaded' : 'missing'}
+            </span>
+          </div>
+          <ul className="health-grid">
+            {platformRows.map((row) => {
+              const node = platform[row.key] || {}
+              const ok = Boolean(node.ok)
+              return (
+                <li key={row.key} className={ok ? 'ok' : 'bad'}>
+                  <span className="health-dot" />
+                  <div>
+                    <strong>{row.label}</strong>
+                    <span className="muted">{row.hint}</span>
+                  </div>
+                  <span className="mono health-detail">{node.detail || (ok ? 'ok' : 'down')}</span>
+                </li>
+              )
+            })}
+          </ul>
         </div>
       </div>
-
-      <section className="kpis">
-        <Kpi label="Transactions Today" value={kpis?.transactionsToday} delta={kpis?.transactionsDelta} suffix="%" />
-        <Kpi label="Active Players" value={kpis?.activePlayers} delta={kpis?.activePlayersDelta} suffix="%" />
-        <Kpi label="Alerts Today" value={kpis?.alertsToday} delta={kpis?.alertsDelta} abs />
-        <Kpi label="Critical Alerts" value={kpis?.criticalAlerts} delta={kpis?.criticalDelta} abs />
-        <Kpi label="Open Cases" value={kpis?.openCases} delta={kpis?.openCasesDelta} abs />
-        <Kpi label="SARs Pending" value={kpis?.sarsPending} delta={kpis?.sarsDelta} abs />
-      </section>
-
-      <section className="grid-2">
-        <div className="card">
-          <div className="card-h">
-            <h3>Real-Time Event Stream</h3>
-            <span className="badge">STREAMING ONLINE</span>
-          </div>
-          <div className="table-page">
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>User ID</th>
-                  <th>Amount</th>
-                  <th>Action</th>
-                  <th>Location</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {events.slice(0, 12).map((ev) => (
-                  <tr key={ev.eventId}>
-                    <td className="mono">{ev.time}</td>
-                    <td>{ev.playerId}</td>
-                    <td className="mono">{money(ev.amount)}</td>
-                    <td>{ev.action}</td>
-                    <td>{ev.location}</td>
-                    <td><span className={`tag ${ev.status}`}>{ev.status}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-h">
-            <h3>Live AML Pipeline</h3>
-          </div>
-          <div className="pipe">
-            {(pipeline.length ? pipeline : [
-              { id: "1", label: "Casino Transaction", status: "ONLINE" },
-              { id: "2", label: "CDC / Debezium", status: "ONLINE" },
-              { id: "3", label: "AMQ Streams", status: "ONLINE" },
-              { id: "4", label: "Rule Engine", status: "ONLINE" },
-              { id: "5", label: "Risk Scoring", status: "ONLINE" },
-              { id: "6", label: "Alert", status: "ONLINE" },
-              { id: "7", label: "Investigation", status: "ONLINE" },
-            ]).map((p) => (
-              <div className="pipe-item" key={p.id}>
-                <span className="grow">{p.label}</span>
-                <span className="badge st">{p.status}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="grid-2b">
-        <div className="card">
-          <div className="card-h"><h3>Alerts by Type</h3></div>
-          <div className="bars">
-            {bars.map((b) => (
-              <div className="bar-row" key={b.type}>
-                <span>{b.type}</span>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: `${(b.count / maxBar) * 100}%` }} />
-                </div>
-                <span className="mono">{b.count}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-h"><h3>Top Risk Customers</h3></div>
-          <div className="risk-grid">
-            {risk.map((c) => (
-              <div className="risk-card" key={c.playerId}>
-                <div>
-                  <div className="name">{c.name}{c.playerId === "C10281" ? " (Demo)" : ""}</div>
-                  <div className="meta">{money(c.monthVolume)} this month · {c.country}</div>
-                </div>
-                <div className={`score-ring ${c.tier}`}>{c.riskScore}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-    </>
-  );
-}
-
-function Kpi({ label, value, delta, suffix, abs }: { label: string; value?: number; delta?: number; suffix?: string; abs?: boolean }) {
-  const neg = (delta || 0) < 0;
-  const shown = abs ? `${neg ? "" : "+"}${delta ?? 0}` : `${neg ? "" : "+"}${delta ?? 0}${suffix || ""}`;
-  return (
-    <article className="kpi">
-      <div className="label">{label}</div>
-      <div className="value">{value?.toLocaleString() ?? "—"}</div>
-      <div className={`delta ${neg ? "neg" : ""}`}>{shown} vs previous period</div>
-    </article>
-  );
+    </div>
+  )
 }

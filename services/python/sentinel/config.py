@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     kafka_client_id: str = "casino-sentinel"
 
     nvidia_nim_url: str = ""  # unused
+    # Set on sentinel-pipeline (manifests/06-apps/services.yaml). Env names: TFM_MODE, TFM_EMBED_URL, TFM_CHECKPOINT.
     tfm_mode: str = "hashed"  # hashed | checkpoint | http
     tfm_checkpoint: str = ""  # path to models/decoder-foundation-model
     tfm_embed_url: str = ""  # http://tfm-embed:8080/v1/embeddings
@@ -26,12 +27,8 @@ class Settings(BaseSettings):
     simulator_interval_sec: float = 2.5
     simulator_enabled: bool = True
     # Tail Postgres if CDC is unavailable. OpenShift demo: false (Kafka CDC only).
-    # Local Podman sets DIRECT_POLL=true because that stack has no Debezium.
     direct_poll: bool = False
     kafka_optional: bool = True
-    # OpenShift AI / OVMS. Empty = local joblib. Example:
-    # http://aml-xgboost.casino-sentinel.svc:8080/v2/models/aml-xgboost/infer
-    xgb_infer_url: str = ""
 
 
 settings = Settings()

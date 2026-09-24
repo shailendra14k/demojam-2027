@@ -1,0 +1,47 @@
+{
+  "structuring": {
+    "rule_ids": ["AML-001"],
+    "expected_risk_levels": ["HIGH", "CRITICAL"],
+    "description": "Deposits just under CTR threshold"
+  },
+  "minimal_gaming": {
+    "rule_ids": ["AML-002"],
+    "expected_risk_levels": ["MEDIUM", "HIGH"],
+    "description": "Large deposit, tiny play, large withdrawal"
+  },
+  "rapid_withdrawal": {
+    "rule_ids": ["AML-003"],
+    "expected_risk_levels": ["HIGH", "CRITICAL"],
+    "description": "Deposit then near-immediate withdrawal"
+  },
+  "shared_device": {
+    "rule_ids": ["AML-005"],
+    "expected_risk_levels": ["MEDIUM", "HIGH"],
+    "description": "Shared device fingerprint across accounts"
+  },
+  "behavioral_deviation": {
+    "rule_ids": ["AML-007", "AML-008"],
+    "expected_risk_levels": ["MEDIUM", "HIGH", "CRITICAL"],
+    "description": "Transaction far above player baseline"
+  },
+  "rapid_wire": {
+    "rule_ids": ["AML-013"],
+    "expected_risk_levels": ["HIGH", "CRITICAL"],
+    "description": "Wire-in then cash-out with little play"
+  },
+  "tito": {
+    "rule_ids": ["AML-014"],
+    "expected_risk_levels": ["MEDIUM", "HIGH"],
+    "description": "Large TITO issue/redeem"
+  },
+  "high_velocity": {
+    "rule_ids": ["AML-011"],
+    "expected_risk_levels": ["MEDIUM", "HIGH"],
+    "description": "Burst cage cash activity"
+  },
+  "watchlist": {
+    "rule_ids": ["AML-015", "AML-009"],
+    "expected_risk_levels": ["HIGH", "CRITICAL"],
+    "description": "Watchlist + CTR cash"
+  }
+}

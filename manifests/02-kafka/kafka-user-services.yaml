@@ -1,0 +1,35 @@
+# From casino-sentinel-merged (B): ACLs for app clients on casino.* / aml.* topics.
+# Apps currently use the plain listener; enable this user on the secure listener when needed.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: casino-services
+  namespace: casino-sentinel
+  labels:
+    strimzi.io/cluster: sentinel-kafka
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: casino
+          patternType: prefix
+        operations: ["Read", "Write", "Describe"]
+      - resource:
+          type: topic
+          name: aml
+          patternType: prefix
+        operations: ["Read", "Write", "Describe"]
+      - resource:
+          type: group
+          name: casino
+          patternType: prefix
+        operations: ["Read"]
+      - resource:
+          type: group
+          name: sentinel
+          patternType: prefix
+        operations: ["Read"]

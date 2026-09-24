@@ -1,27 +1,41 @@
-import type { AlertItem, CaseItem, Customer, Kpis, StatusPayload, StreamEvent } from "./types";
+/** Empty = same-origin (OpenShift nginx proxies /api → casino-api). */
+export const API_BASE = (import.meta as any).env?.VITE_API_URL || ''
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path);
-  if (!res.ok) throw new Error(`${path} ${res.status}`);
-  return res.json() as Promise<T>;
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    ...init,
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
 }
 
 export const api = {
-  status: () => getJson<StatusPayload>("/api/v1/status"),
-  kpis: () => getJson<Kpis>("/api/v1/kpis"),
-  events: () => getJson<{ items: StreamEvent[] }>("/api/v1/events"),
-  alerts: () => getJson<{ items: AlertItem[] }>("/api/v1/alerts"),
-  alertsByType: () => getJson<{ items: { type: string; count: number }[] }>("/api/v1/alerts/by-type"),
-  customers: () => getJson<{ items: Customer[] }>("/api/v1/customers"),
-  cases: () => getJson<{ items: CaseItem[] }>("/api/v1/cases"),
-  sars: () => getJson<{ items: Record<string, unknown>[] }>("/api/v1/sars"),
-  rules: () => getJson<{ items: Record<string, unknown>[] }>("/api/v1/rules"),
-  transactions: () => getJson<{ items: Record<string, unknown>[] }>("/api/v1/transactions"),
-  network: () => getJson<{ nodes: { id: string; name: string; score: number }[]; edges: { from: string; to: string; type: string }[] }>("/api/v1/network"),
-  reports: () => getJson<Record<string, unknown>>("/api/v1/reports"),
-  startScenario: async (name: string) => {
-    const res = await fetch(`/api/v1/demo/scenarios/${name}`, { method: "POST" });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+  summary: () => req<any>('/api/v1/metrics/summary'),
+  pipeline: () => req<any>('/api/v1/pipeline/status'),
+  ready: () => req<any>('/ready'),
+  alerts: (status?: string) => req<any>(`/api/v1/alerts${status ? `?status=${status}` : ''}`),
+  events: () => req<any>('/api/v1/events/live'),
+  player: (id: string) => req<any>(`/api/v1/players/${id}`),
+  scenarios: () => req<any>('/api/v1/demo/scenarios'),
+  /** Fire-and-poll friendly: unique seed + wait_seconds=0 avoids OpenShift edge 504s. */
+  runScenario: (name: string, seed?: number) => {
+    const s = seed ?? Math.floor(Date.now() / 1000)
+    const q = new URLSearchParams({
+      seed: String(s),
+      wait_seconds: '0',
+    })
+    return req<any>(`/api/v1/demo/scenarios/${encodeURIComponent(name)}?${q}`, {
+      method: 'POST',
+    })
   },
-};
+  patchAlert: (id: string, body: any) =>
+    req<any>(`/api/v1/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  rulesCatalog: () => req<any>('/api/v1/rules/catalog'),
+  cases: () => req<any>('/api/v1/cases'),
+  sars: () => req<any>('/api/v1/sars'),
+  weights: () => req<any>('/api/v1/settings/weights'),
+  networkInvestigations: () => req<any>('/api/v1/network/investigations'),
+  investigationNetwork: (id: string) =>
+    req<any>(`/api/v1/network/investigations/${encodeURIComponent(id)}`),
+}

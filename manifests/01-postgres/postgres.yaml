@@ -59,6 +59,13 @@ spec:
       labels:
         app: casino-db
     spec:
+      # Security / lifecycle deltas from casino-sentinel-merged (B); image + names stay A's.
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
       containers:
         - name: postgresql
           image: quay.io/sclorg/postgresql-16-c9s:latest
@@ -98,17 +105,28 @@ spec:
               cpu: 100m
               memory: 256Mi
             limits:
+              cpu: "1"
               memory: 1Gi
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/bash", "-lc", "pg_ctl stop -D /var/lib/pgsql/data/userdata -m fast || true"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           readinessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -h 127.0.0.1"]
             initialDelaySeconds: 10
             periodSeconds: 10
+            failureThreshold: 6
           livenessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -h 127.0.0.1"]
             initialDelaySeconds: 30
             periodSeconds: 20
+            failureThreshold: 6
       volumes:
         - name: data
           persistentVolumeClaim:

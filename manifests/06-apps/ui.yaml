@@ -15,12 +15,21 @@ spec:
       labels:
         app: sentinel-ui
     spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ui
           image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-ui:latest
           ports:
             - containerPort: 8080
               name: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           readinessProbe:
             httpGet:
               path: /
@@ -31,6 +40,7 @@ spec:
               cpu: 50m
               memory: 64Mi
             limits:
+              cpu: 200m
               memory: 128Mi
 ---
 apiVersion: v1
@@ -55,10 +65,33 @@ metadata:
   namespace: casino-sentinel
   labels:
     app: sentinel-ui
+  annotations:
+    # From B: demo POSTs / API proxy must not hit the default ~30s edge cutoff.
+    haproxy.router.openshift.io/timeout: 120s
 spec:
   to:
     kind: Service
     name: sentinel-ui
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+# Optional direct API route (from B routes delta); UI remains primary entry.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: sentinel-api
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-api
+  annotations:
+    haproxy.router.openshift.io/timeout: 120s
+spec:
+  to:
+    kind: Service
+    name: sentinel-api
   port:
     targetPort: http
   tls:

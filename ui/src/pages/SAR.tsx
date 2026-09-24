@@ -1,33 +1,38 @@
-import { useEffect, useState } from "react";
-import { api } from "../api";
+import { useEffect, useState } from 'react'
+import { api } from '../api'
 
 export default function SAR() {
-  const [items, setItems] = useState<Record<string, unknown>[]>([]);
+  const [items, setItems] = useState<any[]>([])
+
   useEffect(() => {
-    api.sars().then((r) => setItems(r.items)).catch(() => undefined);
-  }, []);
+    api.sars().then((r) => setItems(r.items || [])).catch(console.error)
+  }, [])
+
   return (
-    <>
-      <div className="page-head"><div><h2>Suspicious Activity Reports</h2><p>SAR drafts queued for compliance review before FinCEN filing</p></div></div>
-      <div className="card table-page">
-        <table>
-          <thead>
-            <tr><th>SAR</th><th>Case</th><th>Player</th><th>Amount</th><th>Status</th><th>Narrative</th></tr>
-          </thead>
-          <tbody>
-            {items.map((s) => (
-              <tr key={String(s.sarId)}>
-                <td className="mono">{String(s.sarId)}</td>
-                <td>{String(s.caseId)}</td>
-                <td>{String(s.playerName)}</td>
-                <td className="mono">${Number(s.amount || 0).toLocaleString()}</td>
-                <td><span className="tag HIGH">{String(s.status)}</span></td>
-                <td style={{ whiteSpace: "normal" }}>{String(s.narrative)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
+    <section>
+      <h2>SAR drafts</h2>
+      <p className="muted">Suspicious Activity Report drafts from CRITICAL alerts. Empty until critical alerts exist.</p>
+      {items.length === 0 && <p className="muted">No SAR drafts yet.</p>}
+      <table className="table">
+        <thead>
+          <tr>
+            <th>SAR</th>
+            <th>Player</th>
+            <th>Status</th>
+            <th>Narrative</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((s) => (
+            <tr key={s.sar_id}>
+              <td className="mono">{s.sar_id}</td>
+              <td className="mono">{s.player_id}</td>
+              <td>{s.status}</td>
+              <td>{s.narrative}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  )
 }

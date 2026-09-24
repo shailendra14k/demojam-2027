@@ -1,0 +1,13 @@
+.git
+env
+.env
+**/.venv
+**/.venv312
+**/node_modules
+**/__pycache__
+**/.DS_Store
+**/.ipynb_checkpoints
+ui
+manifests
+model/.venv
+model/.venv312

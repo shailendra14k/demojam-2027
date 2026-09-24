@@ -1,0 +1,38 @@
+# Shared runtime config for microservices (A names).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: casino-config
+  namespace: casino-sentinel
+  labels:
+    app.kubernetes.io/part-of: casino-sentinel
+data:
+  POSTGRES_HOST: casino-db
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: casino
+  POSTGRES_USER: casino
+  KAFKA_BOOTSTRAP_SERVERS: sentinel-kafka-kafka-bootstrap:9092
+  DATABASE_URL: postgresql://casino:casino@casino-db:5432/casino
+  PIPELINE_MODE: cdc
+  # mock|cpu|nvidia — nvidia maps to TFM HTTP when TFM_EMBED_URL is set
+  AI_MODE: mock
+  TFM_MODE: hashed
+  TFM_EMBED_URL: ""
+  TFM_CHECKPOINT: ""
+  ALERT_THRESHOLD: "0.55"
+  CDC_WAIT_SECONDS: "45"
+  LOG_LEVEL: INFO
+  RISK_WEIGHT_RULES: "0.45"
+  RISK_WEIGHT_ML: "0.35"
+  RISK_WEIGHT_BEHAVIORAL: "0.20"
+  RISK_WEIGHT_KYC: "0.10"
+  FEATURES_TOPIC: aml.features
+  ENRICHED_TOPIC: casino.events.enriched
+  NORMALIZED_TOPIC: casino.events.normalized
+  RULES_TOPIC: aml.rules.hits
+  ML_TOPIC: aml.ml.scores
+  BEHAVIORAL_TOPIC: aml.behavioral.scores
+  RISK_TOPIC: aml.risk.assessments
+  EXPLAIN_TOPIC: aml.explanations
+  ALERTS_TOPIC: aml.alerts
+  DLQ_TOPIC: casino.dlq

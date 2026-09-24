@@ -1,32 +1,35 @@
-import { useEffect, useState } from "react";
-import { api } from "../api";
+import { useEffect, useState } from 'react'
+import { api } from '../api'
 
 export default function Rules() {
-  const [items, setItems] = useState<Record<string, unknown>[]>([]);
+  const [items, setItems] = useState<any[]>([])
+
   useEffect(() => {
-    api.rules().then((r) => setItems(r.items)).catch(() => undefined);
-  }, []);
+    api.rulesCatalog().then((r) => setItems(r.items || [])).catch(console.error)
+  }, [])
+
   return (
-    <>
-      <div className="page-head"><div><h2>Rules</h2><p>Deterministic AML rules evaluated on every enriched event</p></div></div>
-      <div className="card table-page">
-        <table>
-          <thead>
-            <tr><th>ID</th><th>Name</th><th>Description</th><th>Severity</th><th>Enabled</th></tr>
-          </thead>
-          <tbody>
-            {items.map((r) => (
-              <tr key={String(r.id)}>
-                <td className="mono">{String(r.id)}</td>
-                <td>{String(r.name)}</td>
-                <td style={{ whiteSpace: "normal" }}>{String(r.description)}</td>
-                <td><span className={`tag ${r.severity}`}>{String(r.severity)}</span></td>
-                <td>{r.enabled ? "Yes" : "No"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
+    <section>
+      <h2>Rules catalog</h2>
+      <p className="muted">AML-001…015 — ours plus cage/BSA rules from demojam. Thresholds are env-configurable.</p>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Severity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((r) => (
+            <tr key={r.id}>
+              <td className="mono">{r.id}</td>
+              <td>{r.name}</td>
+              <td>{r.severity}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  )
 }

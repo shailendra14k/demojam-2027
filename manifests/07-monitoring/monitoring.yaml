@@ -1,0 +1,11 @@
+# From casino-sentinel-merged (B): optional Grafana dashboard stub (Prometheus Operator not required).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: casino-grafana-dashboard
+  namespace: casino-sentinel
+  labels:
+    app.kubernetes.io/part-of: casino-sentinel
+data:
+  dashboard.json: |
+    {"title":"Casino Sentinel","panels":[{"title":"Open alerts","type":"stat"}]}

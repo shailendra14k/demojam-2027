@@ -1,3 +1,4 @@
+# Resources + pod labels from casino-sentinel-merged (B); Connect name / RH plugin URL stay A's.
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnect
 metadata:
@@ -21,6 +22,13 @@ spec:
     value.converter: org.apache.kafka.connect.json.JsonConverter
     key.converter.schemas.enable: false
     value.converter.schemas.enable: false
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
   build:
     output:
       type: imagestream
@@ -28,5 +36,11 @@ spec:
     plugins:
       - name: debezium-connector-postgres
         artifacts:
+          # Red Hat supported Debezium build (not Maven Central community).
           - type: zip
             url: https://maven.repository.redhat.com/ga/io/debezium/debezium-connector-postgres/3.4.3.Final-redhat-00001/debezium-connector-postgres-3.4.3.Final-redhat-00001-plugin.zip
+  template:
+    pod:
+      metadata:
+        labels:
+          app: sentinel-connect

@@ -1,0 +1,105 @@
+# From casino-sentinel-merged (B), adapted to A's app labels (sentinel-*).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: casino-default-deny-ingress
+  namespace: casino-sentinel
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: casino-allow-same-namespace
+  namespace: casino-sentinel
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: casino-allow-api
+  namespace: casino-sentinel
+spec:
+  podSelector:
+    matchLabels:
+      app: sentinel-api
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: sentinel-ui
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# OpenShift router lives in openshift-ingress; default-deny blocks Route traffic without this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: casino-allow-router-ui
+  namespace: casino-sentinel
+spec:
+  podSelector:
+    matchLabels:
+      app: sentinel-ui
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              network.openshift.io/policy-group: ingress
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Streams Console Route (sentinel-console.*) — pods are labeled by the console operator.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: casino-allow-router-console
+  namespace: casino-sentinel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: sentinel-console-console-deployment
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              network.openshift.io/policy-group: ingress
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: casino-sentinel
+  namespace: casino-sentinel
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "pods", "services"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: casino-sentinel
+  namespace: casino-sentinel
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: casino-sentinel
+subjects:
+  - kind: ServiceAccount
+    name: casino-sentinel
+    namespace: casino-sentinel

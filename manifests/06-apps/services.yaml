@@ -1,80 +1,254 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: sentinel-pipeline
-  namespace: casino-sentinel
-  labels:
-    app: sentinel-pipeline
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: sentinel-pipeline
-  template:
-    metadata:
-      labels:
-        app: sentinel-pipeline
-    spec:
-      containers:
-        - name: pipeline
-          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
-          command: ["python", "-m", "sentinel.pipeline"]
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: casino-db
-                  key: database-url
-            - name: KAFKA_BOOTSTRAP
-              value: sentinel-kafka-kafka-bootstrap:9092
-            - name: DIRECT_POLL
-              value: "false"
-            - name: KAFKA_OPTIONAL
-              value: "true"
-          resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              memory: 1Gi
+# Microservice AML pipeline (from B architecture) with A naming (sentinel-*).
+# Image: sentinel-python (SERVICE_NAME selects entrypoint).
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: sentinel-simulator
+  name: sentinel-event-normalizer
   namespace: casino-sentinel
   labels:
-    app: sentinel-simulator
+    app: sentinel-event-normalizer
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sentinel-simulator
+      app: sentinel-event-normalizer
   template:
     metadata:
       labels:
-        app: sentinel-simulator
+        app: sentinel-event-normalizer
     spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-        - name: simulator
+        - name: service
           image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
-          command: ["python", "-m", "sentinel.simulator"]
+          imagePullPolicy: Always
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: casino-db
-                  key: database-url
-            - name: SIMULATOR_INTERVAL_SEC
-              value: "3"
-            - name: SIMULATOR_ENABLED
-              value: "true"
+            - name: SERVICE_NAME
+              value: event-normalizer
+          envFrom:
+            - configMapRef:
+                name: casino-config
           resources:
-            requests:
-              cpu: 50m
-              memory: 128Mi
-            limits:
-              memory: 256Mi
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-feature-engine
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-feature-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-feature-engine
+  template:
+    metadata:
+      labels:
+        app: sentinel-feature-engine
+    spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: service
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: feature-engine
+          envFrom:
+            - configMapRef:
+                name: casino-config
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-aml-rules
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-aml-rules
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-aml-rules
+  template:
+    metadata:
+      labels:
+        app: sentinel-aml-rules
+    spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: service
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: aml-rules
+          envFrom:
+            - configMapRef:
+                name: casino-config
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-ml-engine
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-ml-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-ml-engine
+  template:
+    metadata:
+      labels:
+        app: sentinel-ml-engine
+    spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: service
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: ml-engine
+            - name: AI_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: casino-config
+                  key: AI_MODE
+            - name: TFM_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: casino-config
+                  key: TFM_MODE
+            - name: TFM_EMBED_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: casino-config
+                  key: TFM_EMBED_URL
+          envFrom:
+            - configMapRef:
+                name: casino-config
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-risk-engine
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-risk-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-risk-engine
+  template:
+    metadata:
+      labels:
+        app: sentinel-risk-engine
+    spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: service
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: risk-engine
+          envFrom:
+            - configMapRef:
+                name: casino-config
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-alert-service
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-alert-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-alert-service
+  template:
+    metadata:
+      labels:
+        app: sentinel-alert-service
+    spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: service
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: alert-service
+          envFrom:
+            - configMapRef:
+                name: casino-config
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -93,23 +267,23 @@ spec:
       labels:
         app: sentinel-api
     spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
           image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
-          command: ["python", "-m", "sentinel.api"]
+          imagePullPolicy: Always
+          # Empty SERVICE_NAME → backend uvicorn (B UI API) on 8080
+          command: ["sh", "-c", "python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080"]
           ports:
             - containerPort: 8080
               name: http
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: casino-db
-                  key: database-url
-            - name: KAFKA_BOOTSTRAP
-              value: sentinel-kafka-kafka-bootstrap:9092
-            - name: DATA_MODE
-              value: auto
+          envFrom:
+            - configMapRef:
+                name: casino-config
           readinessProbe:
             httpGet:
               path: /healthz
@@ -123,11 +297,11 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 20
           resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              memory: 512Mi
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
 ---
 apiVersion: v1
 kind: Service
@@ -143,3 +317,46 @@ spec:
     - name: http
       port: 8080
       targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-simulator
+  namespace: casino-sentinel
+  labels:
+    app: sentinel-simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-simulator
+  template:
+    metadata:
+      labels:
+        app: sentinel-simulator
+    spec:
+      serviceAccountName: casino-sentinel
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: simulator
+          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-python:latest
+          command: ["python", "-m", "sentinel.simulator"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: casino-db
+                  key: database-url
+            - name: SIMULATOR_INTERVAL_SEC
+              value: "3"
+            - name: SIMULATOR_ENABLED
+              value: "true"
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 200m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }

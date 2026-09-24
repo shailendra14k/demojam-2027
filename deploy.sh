@@ -43,8 +43,9 @@ Optional:
   -h, --help
 
 Default (./deploy.sh --env ./env --insecure):
-  PostgreSQL + AMQ Streams + Streams Console + Debezium + pipeline + UI.
-  XGBoost scores in-pipeline from joblib (no OpenShift AI).
+  PostgreSQL + AMQ Streams + Streams Console + Debezium + microservice AML pipeline + UI.
+  XGBoost scores in sentinel-ml-engine from joblib (no OpenShift AI).
+  TFM_MODE=hashed / AI_MODE=mock on casino-config. Set TFM_MODE=http + TFM_EMBED_URL for GPU.
 EOF
 }
 
@@ -233,9 +234,11 @@ print_summary() {
   fi
   echo "Kafka bootstrap:  sentinel-kafka-kafka-bootstrap.${NAMESPACE}.svc:9092"
   echo "Postgres:         casino-db.${NAMESPACE}.svc:5432  (user casino / casino)"
-  echo "XGBoost:          joblib inside sentinel-python (sentinel-pipeline)"
+  echo "XGBoost:          joblib in sentinel-python (sentinel-ml-engine)"
+  echo "Pipeline:         normalizer → features → rules+ml → risk → alerts"
+  echo "TFM:              TFM_MODE/AI_MODE on casino-config (default hashed/mock). GPU: TFM_MODE=http + TFM_EMBED_URL"
   echo
-  echo "Demo: open the UI → Start Scenario (structuring / rapid-wire / mixed)"
+  echo "Demo: open the UI → Demo Controls / Start Scenario (structuring / rapid-wire / mixed)"
 }
 
 # Load --env first
@@ -273,6 +276,9 @@ need_oc
 login
 ensure_namespace
 deploy_operators
+apply "${MANIFESTS}/00-base/serviceaccount.yaml"
+apply "${MANIFESTS}/00-base/config.yaml"
+apply "${MANIFESTS}/07-security/network-rbac.yaml"
 create_sql_configmaps
 apply "${MANIFESTS}/01-postgres/postgres.yaml"
 wait_deploy casino-db 300
@@ -285,14 +291,16 @@ apply "${MANIFESTS}/02-kafka/kafka.yaml"
 apply "${MANIFESTS}/05-builds/python.yaml"
 apply "${MANIFESTS}/05-builds/ui.yaml"
 if [[ "${SKIP_BUILDS}" != true ]]; then
-  start_build sentinel-python "${SCRIPT_DIR}/services/python"
+  start_build sentinel-python "${SCRIPT_DIR}"
   start_build sentinel-ui "${SCRIPT_DIR}/ui"
 fi
 
 wait_cr kafka sentinel-kafka 720 || true
 apply "${MANIFESTS}/02-kafka/kafka-user-console.yaml"
+apply "${MANIFESTS}/02-kafka/kafka-user-services.yaml"
 if [[ "${DRY_RUN}" != true ]]; then
   oc wait kafkauser/console-user -n "${NAMESPACE}" --for=condition=Ready --timeout=180s || true
+  oc wait kafkauser/casino-services -n "${NAMESPACE}" --for=condition=Ready --timeout=180s || true
 fi
 deploy_console
 apply "${MANIFESTS}/03-topics/topics.yaml"
@@ -301,10 +309,20 @@ apply "${MANIFESTS}/04-debezium/kafka-connect.yaml"
 
 apply "${MANIFESTS}/06-apps/services.yaml"
 apply "${MANIFESTS}/06-apps/ui.yaml"
-wait_deploy sentinel-api 240 || true
-wait_deploy sentinel-pipeline 240 || true
-wait_deploy sentinel-simulator 240 || true
-wait_deploy sentinel-ui 240 || true
+apply "${MANIFESTS}/07-monitoring/monitoring.yaml" || true
+for d in \
+  sentinel-event-normalizer \
+  sentinel-feature-engine \
+  sentinel-aml-rules \
+  sentinel-ml-engine \
+  sentinel-risk-engine \
+  sentinel-alert-service \
+  sentinel-api \
+  sentinel-simulator \
+  sentinel-ui
+do
+  wait_deploy "$d" 240 || true
+done
 
 log "Waiting for Kafka Connect image build (can take several minutes)"
 wait_cr kafkaconnect sentinel-connect 900 || true

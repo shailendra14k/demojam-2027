@@ -1,69 +1,56 @@
-"""CPU predictive models: XGBoost + Isolation Forest.
-
-No GPU required. Train with: python -m sentinel.train_models
-"""
+"""Monolith helpers: score via ``AMLModel`` (B feature schema + model/artifacts)."""
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 
-import numpy as np
-
-from .config import settings
+from .aml_model import AMLModel
 from .models import EnrichedEvent, PlayerFeatures, PlayerProfile
-from .vectorize import FEATURE_NAMES, vectorize
 
 log = logging.getLogger("sentinel.ml")
 
-ARTIFACTS = Path(__file__).resolve().parent / "artifacts"
-_xgb = None
-_iforest = None
-_importances: list[tuple[str, float]] = []
+_model: AMLModel | None = None
 
 
-def _load_xgboost():
-    global _xgb, _importances
-    if _xgb is not None:
-        return _xgb
-    for name in ("aml_xgboost.joblib", "aml_gbt.joblib"):
-        path = ARTIFACTS / name
-        if not path.exists():
-            continue
-        import joblib
-
-        payload = joblib.load(path)
-        _xgb = payload["model"] if isinstance(payload, dict) else payload
-        meta_path = ARTIFACTS / "meta.json"
-        if meta_path.exists():
-            meta = json.loads(meta_path.read_text())
-            _importances = [(n, float(v)) for n, v in meta.get("top_features", [])]
-        if not _importances and hasattr(_xgb, "feature_importances_"):
-            _importances = sorted(
-                zip(FEATURE_NAMES, [float(x) for x in _xgb.feature_importances_]),
-                key=lambda x: x[1],
-                reverse=True,
-            )
-        log.info("Loaded XGBoost AML classifier %s", path)
-        return _xgb
-    log.warning("XGBoost artifact missing under %s — using heuristic fallback", ARTIFACTS)
-    return None
+def _get_model() -> AMLModel:
+    global _model
+    if _model is None:
+        _model = AMLModel()
+        try:
+            _model.load()
+        except FileNotFoundError as exc:
+            log.warning("%s — heuristic fallback", exc)
+    return _model
 
 
-def _load_iforest():
-    global _iforest
-    if _iforest is not None:
-        return _iforest
-    path = ARTIFACTS / "aml_iforest.joblib"
-    if not path.exists():
-        log.warning("Isolation Forest artifact missing at %s", path)
-        return None
-    import joblib
-
-    _iforest = joblib.load(path)
-    log.info("Loaded Isolation Forest %s", path)
-    return _iforest
+def _to_flat(
+    event: EnrichedEvent | None,
+    features: PlayerFeatures,
+    profile: PlayerProfile | None,
+) -> dict[str, float]:
+    """Map A PlayerFeatures → B FEATURE_COLUMNS names for the shared joblib."""
+    pep = bool(profile.pep_flag if profile else (event.pep_flag if event else False))
+    watch = bool(profile.watchlist_hit if profile else (event.watchlist_hit if event else False))
+    ratio = features.wager_to_buyin_ratio
+    return {
+        "w1h_tx_count": float(features.txn_count_1h),
+        "w24h_tx_count": float(features.txn_count_24h),
+        "w24h_deposit_sum": float(features.cash_in_24h),
+        "w24h_cash_in_sum": float(features.cash_in_24h),
+        "w24h_withdrawal_sum": float(features.cash_out_24h),
+        "w24h_cash_out_sum": float(features.cash_out_24h),
+        "w24h_wager_sum": float(features.total_wagered_24h),
+        "w24h_cage_visits": float(features.cage_visits_24h),
+        "w24h_just_below_10k_count": float(features.just_below_10k_count_24h),
+        "w24h_unique_payment_methods": float(features.unique_payment_methods_24h),
+        "w24h_wire_in_sum": float(features.wire_in_24h),
+        "w30d_tx_sum": float(features.month_volume),
+        "static_is_pep": 1.0 if pep else 0.0,
+        "static_watchlist_hit": 1.0 if watch else 0.0,
+        "static_shared_device_count": 1.0,
+        # keep ratio signal in wager sum already; unused cols default 0 in AMLModel
+        "_wager_ratio": float(ratio if ratio is not None else 0.0),
+    }
 
 
 def score_xgboost(
@@ -71,30 +58,15 @@ def score_xgboost(
     features: PlayerFeatures,
     profile: PlayerProfile | None,
 ) -> tuple[int, list[dict]]:
-    """Supervised AML probability → 0–100 (OpenShift AI ONNX, else local joblib)."""
-    vec = vectorize(event, features, profile)
-    proba = None
-    source = "xgboost"
-    if settings.xgb_infer_url:
-        from . import onnx_infer
-
-        remote = onnx_infer.predict_proba(settings.xgb_infer_url, vec)
-        if remote is not None:
-            proba = float(remote.reshape(-1)[1] if remote.size > 1 else remote.reshape(-1)[0])
-            source = "xgboost-onnx"
-    if proba is None:
-        model = _load_xgboost()
-        if model is None:
-            return _heuristic(event, features, profile)
-        proba = float(model.predict_proba(np.asarray([vec], dtype=np.float32))[0, 1])
-
-    score = int(max(1, min(99, round(proba * 100))))
-    ranked = _importances[:4] or list(zip(FEATURE_NAMES, vec))
-    factors = []
-    for name, _imp in ranked[:4]:
-        idx = FEATURE_NAMES.index(name) if name in FEATURE_NAMES else -1
-        val = vec[idx] if idx >= 0 else None
-        factors.append({"feature": name, "value": val, "model": source})
+    model = _get_model()
+    if model.model is None:
+        return _heuristic(event, features, profile)
+    out = model.predict(_to_flat(event, features, profile))
+    score = int(max(1, min(99, round(float(out["score"]) * 100))))
+    factors = [
+        {"feature": c["feature"], "value": c.get("value"), "model": "xgboost"}
+        for c in (out.get("shap_top") or [])[:4]
+    ]
     return score, factors
 
 
@@ -103,17 +75,16 @@ def score_anomaly(
     features: PlayerFeatures,
     profile: PlayerProfile | None,
 ) -> tuple[int, list[dict]]:
-    """Isolation Forest → 0–100 risk (CPU, unsupervised)."""
-    vec = vectorize(event, features, profile)
-    model = _load_iforest()
-    if model is None:
+    model = _get_model()
+    if model.iforest is None and model.model is None:
         return _heuristic(event, features, profile)
-
-    decision = float(model.decision_function(np.asarray([vec], dtype=np.float32))[0])
-    score = int(max(1, min(99, round(50 - decision * 90))))
-    factors = [
-        {"feature": "isolation_forest", "detail": f"decision_function={decision:.3f}", "model": "iforest"}
-    ]
+    out = model.predict(_to_flat(event, features, profile))
+    if "iforest_score" in out:
+        score = int(max(1, min(99, round(float(out["iforest_score"]) * 100))))
+        factors = [{"feature": "isolation_forest", "detail": f"score={out['iforest_score']:.3f}", "model": "iforest"}]
+    else:
+        score = int(max(1, min(99, round(float(out["score"]) * 100))))
+        factors = [{"feature": "xgboost_proxy", "detail": "no iforest artifact", "model": "xgboost"}]
     if features.just_below_10k_count_24h >= 2:
         factors.append({"feature": "just_below_10k_count_24h", "detail": str(features.just_below_10k_count_24h)})
     ratio = features.wager_to_buyin_ratio
