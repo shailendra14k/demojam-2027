@@ -27,8 +27,16 @@ def test_pipeline_status(api_main):
     client = TestClient(api_main.app)
     r = client.get("/api/v1/pipeline/status")
     assert r.status_code == 200
-    names = [s["name"] for s in r.json()["stages"]]
+    body = r.json()
+    names = [s["name"] for s in body["stages"]]
     assert names == ["DATABASE", "CDC", "STREAM", "ENRICH", "ANALYZE", "RISK", "ALERT"]
+    assert isinstance(body.get("components"), list)
+    assert len(body["components"]) >= 8
+    assert isinstance(body.get("edges"), list)
+    ids = {c["id"] for c in body["components"]}
+    assert {"db", "kafka", "ml", "risk", "alerts", "api"}.issubset(ids)
+    for c in body["components"]:
+        assert c["status"] in ("healthy", "down")
 
 
 def test_metrics_summary_observability(api_main):

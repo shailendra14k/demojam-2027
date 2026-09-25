@@ -51,6 +51,14 @@ spec:
         tls: true
         authentication:
           type: scram-sha-512
+    # Required for KafkaUser casino-services ACLs.
+    # Connect uses the plain listener (no auth) → principal ANONYMOUS; keep it as
+    # super-user so Connect can manage sentinel-connect-* topics. SCRAM users still
+    # go through ACLs on the secure listener.
+    authorization:
+      type: simple
+      superUsers:
+        - ANONYMOUS
     config:
       offsets.topic.replication.factor: 1
       transaction.state.log.replication.factor: 1

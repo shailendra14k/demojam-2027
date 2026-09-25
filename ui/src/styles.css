@@ -517,6 +517,318 @@ tr:hover td { background: rgba(45, 212, 191, 0.04); }
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* —— Pipeline flow diagram —— */
+.pipeline-page { animation: rise 400ms ease both; }
+.flow-legend-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.flow-kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem 1.25rem;
+  font-size: 0.85rem;
+}
+.flow-kpis strong { font-family: var(--mono); }
+.ok-ink { color: var(--ok); }
+.bad-ink { color: var(--danger); }
+.flow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.flow-swatch {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.35rem;
+  vertical-align: middle;
+}
+.flow-swatch.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.15); }
+.flow-swatch.bad { background: var(--danger); }
+.flow-swatch.flow {
+  background: var(--ok);
+  box-shadow: 0 0 8px rgba(45, 212, 191, 0.7);
+  animation: pulse 1.2s ease infinite;
+}
+.flow-swatch.idle { background: #475569; }
+
+.flow-diagram-wrap { margin-bottom: 0.75rem; }
+.flow-diagram {
+  --node-storage: #f59e0b;
+  --node-ingest: #38bdf8;
+  --node-bus: #a78bfa;
+  --node-service: #2dd4bf;
+  --node-gpu: #e879f9;
+  --node-api: #60a5fa;
+  --node-ui: #34d399;
+  position: relative;
+  min-height: 32rem;
+  padding: 1.75rem 0.5rem 0.5rem;
+  border-radius: 1.25rem;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 42% 55% at 12% 30%, rgba(245, 158, 11, 0.1), transparent 70%),
+    radial-gradient(ellipse 38% 50% at 35% 70%, rgba(56, 189, 248, 0.1), transparent 70%),
+    radial-gradient(ellipse 40% 55% at 64% 40%, rgba(167, 139, 250, 0.12), transparent 70%),
+    radial-gradient(ellipse 35% 45% at 88% 55%, rgba(45, 212, 191, 0.1), transparent 70%),
+    linear-gradient(165deg, rgba(12, 18, 28, 0.4), rgba(7, 11, 18, 0.55));
+}
+
+.flow-lanes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.flow-lane {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed rgba(148, 163, 184, 0.12);
+  transform: translateX(-50%);
+}
+.flow-lane span {
+  position: absolute;
+  top: 0.15rem;
+  left: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(139, 156, 179, 0.65);
+  white-space: nowrap;
+}
+
+.flow-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+.flow-edge {
+  fill: none;
+  stroke-width: 0.42;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.flow-edge.idle {
+  stroke: rgba(100, 116, 139, 0.35);
+  stroke-dasharray: 1.4 1.6;
+}
+.flow-edge.flowing {
+  stroke-dasharray: 2.2 1.4;
+  animation: flowDash 1.05s linear infinite;
+}
+.flow-edge.flowing.kind-storage,
+.flow-edge.flowing.kind-ingest { stroke: url(#flowGradAmber); filter: drop-shadow(0 0 1.2px rgba(245, 158, 11, 0.7)); }
+.flow-edge.flowing.kind-bus { stroke: url(#flowGradViolet); filter: drop-shadow(0 0 1.2px rgba(167, 139, 250, 0.75)); }
+.flow-edge.flowing.kind-service,
+.flow-edge.flowing.kind-api,
+.flow-edge.flowing.kind-ui { stroke: url(#flowGradTeal); filter: drop-shadow(0 0 1.2px rgba(45, 212, 191, 0.75)); }
+.flow-edge.flowing.kind-gpu { stroke: #e879f9; filter: drop-shadow(0 0 1.4px rgba(232, 121, 249, 0.8)); }
+@keyframes flowDash {
+  to { stroke-dashoffset: -8; }
+}
+
+.flow-canvas {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  min-height: 28rem;
+}
+
+.flow-node {
+  --node: var(--node-service);
+  position: absolute;
+  width: clamp(7.2rem, 9.5vw, 10.5rem);
+  transform: translate(-50%, -50%);
+  border: 1.5px solid color-mix(in srgb, var(--node) 45%, transparent);
+  border-radius: 1.35rem 1.35rem 1.55rem 1.35rem;
+  background:
+    linear-gradient(155deg, color-mix(in srgb, var(--node) 18%, transparent), transparent 55%),
+    rgba(7, 11, 18, 0.88);
+  padding: 0.55rem 0.7rem 0.65rem;
+  overflow: hidden;
+  min-width: 0;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--node) 12%, transparent),
+    0 8px 24px rgba(0, 0, 0, 0.35);
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+.flow-node:hover {
+  transform: translate(-50%, -50%) scale(1.04);
+  z-index: 5;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--node) 35%, transparent),
+    0 12px 28px rgba(0, 0, 0, 0.45),
+    0 0 28px color-mix(in srgb, var(--node) 22%, transparent);
+}
+.flow-node-glow {
+  position: absolute;
+  inset: -40% -20% auto;
+  height: 70%;
+  background: radial-gradient(ellipse at center, color-mix(in srgb, var(--node) 28%, transparent), transparent 70%);
+  pointer-events: none;
+  opacity: 0.85;
+}
+.flow-node.kind-storage { --node: var(--node-storage); border-radius: 1.6rem 1.1rem 1.6rem 1.1rem; }
+.flow-node.kind-ingest { --node: var(--node-ingest); border-radius: 2rem 1.2rem 2rem 1.2rem; }
+.flow-node.kind-bus { --node: var(--node-bus); border-radius: 1.2rem 1.8rem 1.2rem 1.8rem; }
+.flow-node.kind-service { --node: var(--node-service); }
+.flow-node.kind-gpu { --node: var(--node-gpu); border-radius: 50% / 42%; }
+.flow-node.kind-api { --node: var(--node-api); border-radius: 1.1rem 1.6rem 1.1rem 1.6rem; }
+.flow-node.kind-ui { --node: var(--node-ui); border-radius: 1.8rem; }
+
+.flow-node header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin-bottom: 0.3rem;
+  position: relative;
+  z-index: 1;
+}
+.flow-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  color: var(--node);
+  background: color-mix(in srgb, var(--node) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--node) 40%, transparent);
+  flex-shrink: 0;
+}
+.flow-node h3 {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  position: relative;
+  z-index: 1;
+  color: color-mix(in srgb, var(--ink) 92%, var(--node));
+}
+.flow-detail {
+  margin: 0.25rem 0 0;
+  font-size: 0.6rem;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  position: relative;
+  z-index: 1;
+}
+.flow-activity {
+  margin: 0.3rem 0 0;
+  font-size: 0.62rem;
+  color: var(--node);
+  position: relative;
+  z-index: 1;
+}
+
+.flow-badge {
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.45);
+}
+.flow-badge.ok {
+  color: var(--node);
+  border-color: color-mix(in srgb, var(--node) 50%, transparent);
+}
+.flow-badge.bad { color: var(--danger); border-color: rgba(244, 63, 94, 0.45); }
+.flow-badge.idle { color: var(--muted); }
+
+.flow-node.ok { border-color: color-mix(in srgb, var(--node) 48%, transparent); }
+.flow-node.flowing {
+  border-color: color-mix(in srgb, var(--node) 75%, white 10%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--node) 25%, transparent),
+    0 0 22px color-mix(in srgb, var(--node) 30%, transparent),
+    0 8px 20px rgba(0, 0, 0, 0.35);
+}
+.flow-node.bad {
+  --node: var(--danger);
+  border-color: rgba(244, 63, 94, 0.55);
+  background: linear-gradient(155deg, rgba(244, 63, 94, 0.14), rgba(7, 11, 18, 0.9));
+}
+.flow-node.standby { opacity: 0.7; border-style: dashed; }
+
+.flow-node.kind-gpu.flowing::after,
+.flow-node.kind-gpu.ok::after {
+  content: "GPU";
+  position: absolute;
+  top: 0.4rem;
+  right: 0.55rem;
+  font-family: var(--mono);
+  font-size: 0.48rem;
+  color: color-mix(in srgb, var(--node-gpu) 80%, white);
+  letter-spacing: 0.08em;
+  opacity: 0.85;
+}
+
+.flow-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    110deg,
+    transparent 20%,
+    color-mix(in srgb, var(--node) 22%, transparent) 48%,
+    transparent 72%
+  );
+  transform: translateX(-100%);
+  animation: pipeSweep 2.2s ease-in-out infinite;
+  pointer-events: none;
+}
+.flow-footnote { margin: 0.75rem 0 0; font-size: 0.78rem; }
+
+@media (max-width: 1100px) {
+  .flow-diagram {
+    min-height: auto;
+    padding: 0.5rem 0;
+    background: transparent;
+  }
+  .flow-edges,
+  .flow-lanes { display: none; }
+  .flow-canvas {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+    min-height: 0;
+    height: auto;
+  }
+  .flow-node {
+    position: relative;
+    left: auto !important;
+    top: auto !important;
+    transform: none;
+    width: auto;
+  }
+  .flow-node:hover { transform: none; }
+}
+
 @media (max-width: 1200px) {
   .kpi-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }

@@ -91,7 +91,15 @@ rules:
     verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "patch"]
+    verbs: ["get", "list", "patch"]
+  # Live pipeline health: Kafka / Connect / connector Ready conditions
+  - apiGroups: ["kafka.strimzi.io"]
+    resources: ["kafkas", "kafkaconnects", "kafkaconnectors"]
+    verbs: ["get", "list"]
+  # Live pipeline health: KServe InferenceService (TFM embeddings)
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["inferenceservices"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

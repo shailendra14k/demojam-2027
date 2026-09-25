@@ -2,7 +2,7 @@
 # Deploy Casino Sentinel (Casino Guard AML demo) to OpenShift.
 # Usage:
 #   ./deploy.sh --api https://api.cluster:6443 --token sha256~...
-#   ./deploy.sh --env ./env
+#   ./deploy.sh --env ./.env
 
 set -euo pipefail
 
@@ -44,13 +44,17 @@ Optional:
   --dry-run            Print commands only
   -h, --help
 
-Default (./deploy.sh --env ./env --insecure):
+Default (./deploy.sh --env ./.env --insecure):
   PostgreSQL + AMQ Streams + Streams Console + Debezium + microservice AML pipeline + UI.
   XGBoost scores in sentinel-ml-engine from joblib (no OpenShift AI).
   TFM_MODE=hashed / AI_MODE=mock on casino-config.
 
 With --rhoai (OpenShift AI KServe + 1 GPU + NGC):
   Prerequisite: ../nvidia-tfm/clone-nvidia-tfm.sh  → model/decoder-foundation-model/
+  Waits for DSC kserve=Managed + ServingRuntime/InferenceService CRDs (RHOAI_WAIT_TIMEOUT).
+  Auto-enables KServe on DSC if needed (disable with RHOAI_ENABLE_KSERVE=false).
+  First frees the single GPU (stops other InferenceServices e.g. llama-32-3b-instruct,
+  scales down other nvidia.com/gpu Deployments). Set SKIP_FREE_GPU=true to skip.
   Creates PVC tfm-checkpoint + loads weights, ngc-secret (NGC_API_KEY),
   ConfigMap tfm-embed-script from model/serve_embeddings.py,
   applies manifests/08-openshift-ai/*, sets TFM_MODE=http + AI_MODE=nvidia.
@@ -219,6 +223,96 @@ deploy_console() {
 
 # OpenShift AI TFM: PVC + NGC secret + script ConfigMap + ServingRuntime + InferenceService.
 # Laptop pre-req: ../nvidia-tfm/clone-nvidia-tfm.sh → model/decoder-foundation-model/ (see OCP-1GPU.md).
+
+# Fresh 1-GPU labs often ship with llama-32-3b-instruct (or similar) already on the GPU.
+# Stop other GPU InferenceServices / Deployments before scheduling tfm-embed.
+free_single_gpu() {
+  if [[ "${SKIP_FREE_GPU:-false}" == "true" || "${SKIP_FREE_GPU:-}" == "1" ]]; then
+    log "SKIP_FREE_GPU set — not stopping other GPU workloads"
+    return 0
+  fi
+
+  log "Freeing the single cluster GPU for TFM (stop other GPU model deployments first)"
+
+  # 1) OpenShift AI / KServe InferenceServices (e.g. llama-32-3b-instruct in my-first-model)
+  if oc api-resources --api-group=serving.kserve.io 2>/dev/null | grep -q InferenceService; then
+    local ns name stopped
+    stopped=0
+    while read -r ns name; do
+      [[ -z "${ns}" || -z "${name}" ]] && continue
+      if [[ "${ns}" == "${NAMESPACE}" && "${name}" == "tfm-embed" ]]; then
+        continue
+      fi
+      # Already stopped?
+      local stop_ann
+      stop_ann="$(oc get inferenceservice "${name}" -n "${ns}" -o jsonpath='{.metadata.annotations.serving\.kserve\.io/stop}' 2>/dev/null || true)"
+      if [[ "${stop_ann}" == "true" ]]; then
+        ok "InferenceService ${ns}/${name} already stopped"
+        continue
+      fi
+      log "Stopping InferenceService ${ns}/${name} (serving.kserve.io/stop=true)"
+      oc annotate inferenceservice "${name}" -n "${ns}" \
+        serving.kserve.io/stop=true --overwrite >/dev/null
+      stopped=$((stopped + 1))
+    done < <(oc get inferenceservice -A --no-headers 2>/dev/null | awk '{print $1, $2}')
+    [[ "${stopped}" -gt 0 ]] && ok "Stopped ${stopped} InferenceService(s) to free GPU"
+  fi
+
+  # 2) Deployments that request nvidia.com/gpu (skip GPU Operator / device plugin / our predictor)
+  local line dns dname gpu
+  while IFS=$'\t' read -r dns dname gpu; do
+    [[ -z "${dns}" || -z "${dname}" ]] && continue
+    [[ -z "${gpu}" || "${gpu}" == "<none>" || "${gpu}" == "0" ]] && continue
+    case "${dns}" in
+      nvidia-gpu-operator|gpu-operator*|openshift-*|redhat-ods-operator) continue ;;
+    esac
+    case "${dname}" in
+      *device-plugin*|*gpu-feature-discovery*|*dcgm*|*mig-manager*|*nvidia-driver*|*node-feature*) continue ;;
+      tfm-embed-predictor|tfm-embed) continue ;;
+    esac
+    if [[ "${dns}" == "${NAMESPACE}" && "${dname}" == tfm-embed* ]]; then
+      continue
+    fi
+    local replicas
+    replicas="$(oc get deploy "${dname}" -n "${dns}" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)"
+    if [[ "${replicas}" == "0" ]]; then
+      ok "Deploy ${dns}/${dname} already scaled to 0"
+      continue
+    fi
+    log "Scaling Deploy ${dns}/${dname} → 0 (held nvidia.com/gpu=${gpu})"
+    oc scale deploy "${dname}" -n "${dns}" --replicas=0 >/dev/null || true
+  done < <(
+    oc get deploy -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .spec.template.spec.containers[*]}{.resources.requests.nvidia\.com/gpu}{" "}{end}{"\n"}{end}' 2>/dev/null \
+      | sed 's/[[:space:]]*$//'
+  )
+
+  # 3) Wait until no non-TFM pods still bind nvidia.com/gpu (up to ~3 minutes)
+  log "Waiting for GPU to become free for tfm-embed…"
+  local i holders
+  for i in $(seq 1 36); do
+    holders="$(
+      oc get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.status.phase}{"\t"}{range .spec.containers[*]}{.resources.requests.nvidia\.com/gpu}{" "}{end}{"\n"}{end}' 2>/dev/null \
+        | awk -F'\t' '
+            $4 ~ /[1-9]/ {
+              if ($1 ~ /nvidia-gpu-operator|gpu-operator/ ) next
+              if ($2 ~ /^tfm-embed/) next
+              if ($3 == "Succeeded" || $3 == "Failed") next
+              print $1 "/" $2 " (" $3 ")"
+            }'
+    )"
+    if [[ -z "${holders}" ]]; then
+      ok "GPU is free (no competing workloads)"
+      return 0
+    fi
+    if (( i == 1 || i % 6 == 0 )); then
+      log "Still waiting; GPU held by: $(echo "${holders}" | tr '\n' ' ')"
+    fi
+    sleep 5
+  done
+  log "WARNING: GPU may still be busy — tfm-embed can stay Pending. Holders:"
+  echo "${holders}"
+}
+
 ensure_ngc_secret() {
   if oc get secret ngc-secret -n "${NAMESPACE}" >/dev/null 2>&1; then
     ok "Secret ngc-secret exists"
@@ -278,6 +372,80 @@ EOF
   ok "Checkpoint loaded onto PVC"
 }
 
+# Verify OpenShift AI single-model serving (KServe) is ready before applying TFM manifests.
+# Fresh demo clusters often have the operator installed before CRDs finish registering.
+ensure_rhoai_kserve() {
+  local wait_secs="${RHOAI_WAIT_TIMEOUT:-600}"
+  local auto_enable="${RHOAI_ENABLE_KSERVE:-true}"
+  local dsc=""
+  local state=""
+  local i
+
+  log "Checking OpenShift AI / KServe readiness (ServingRuntime + InferenceService CRDs)"
+
+  # Prefer named DSC used on RHOAI labs; else first available
+  if oc get dsc default-dsc >/dev/null 2>&1; then
+    dsc="default-dsc"
+  else
+    dsc="$(oc get dsc -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  fi
+
+  if [[ -z "${dsc}" ]]; then
+    die "No DataScienceCluster found. Install Red Hat OpenShift AI from OperatorHub, wait for DSC, then re-run --rhoai.
+  Check: oc get dsc,dscinitialization -A
+  Docs: ../nvidia-tfm/OCP-1GPU.md"
+  fi
+  ok "DataScienceCluster: ${dsc}"
+
+  state="$(oc get dsc "${dsc}" -o jsonpath='{.spec.components.kserve.managementState}' 2>/dev/null || true)"
+  if [[ -z "${state}" ]]; then
+    # Older DSC shapes / API drift — still try waiting for CRDs
+    log "Could not read dsc.spec.components.kserve.managementState (continuing with CRD wait)"
+  elif [[ "${state}" != "Managed" ]]; then
+    log "DSC ${dsc} kserve.managementState=${state} (need Managed for single-model serving)"
+    if [[ "${auto_enable}" == "true" || "${auto_enable}" == "1" ]]; then
+      log "Enabling KServe: patching dsc/${dsc} kserve.managementState=Managed"
+      oc patch dsc "${dsc}" --type merge \
+        -p '{"spec":{"components":{"kserve":{"managementState":"Managed"}}}}' \
+        || die "Failed to patch dsc/${dsc}. Enable KServe in the OpenShift AI console or patch manually."
+      ok "Patched dsc/${dsc} → kserve Managed"
+    else
+      die "KServe is not Managed (state=${state}). Set RHOAI_ENABLE_KSERVE=true or patch:
+  oc patch dsc ${dsc} --type merge -p '{\"spec\":{\"components\":{\"kserve\":{\"managementState\":\"Managed\"}}}}'"
+    fi
+  else
+    ok "DSC ${dsc} kserve.managementState=Managed"
+  fi
+
+  # Wait for CRDs (operator may still be installing controllers on a fresh cluster)
+  log "Waiting up to ${wait_secs}s for KServe CRDs…"
+  for ((i = 0; i < wait_secs; i += 5)); do
+    if oc get crd servingruntimes.serving.kserve.io >/dev/null 2>&1 \
+       && oc get crd inferenceservices.serving.kserve.io >/dev/null 2>&1; then
+      ok "CRDs ready: ServingRuntime + InferenceService"
+      # Best-effort: DSC Ready (do not fail hard — CRDs are enough to apply manifests)
+      local ready
+      ready="$(oc get dsc "${dsc}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+      if [[ "${ready}" == "True" ]]; then
+        ok "DataScienceCluster/${dsc} Ready=True"
+      else
+        log "DSC Ready=${ready:-unknown} (proceeding — CRDs exist)"
+      fi
+      return 0
+    fi
+    if (( i % 30 == 0 )); then
+      log "Still waiting for servingruntimes.serving.kserve.io / inferenceservices… (${i}s)"
+    fi
+    sleep 5
+  done
+
+  die "Timed out after ${wait_secs}s waiting for KServe CRDs.
+  oc get crd servingruntimes.serving.kserve.io inferenceservices.serving.kserve.io
+  oc get dsc ${dsc} -o yaml | grep -A8 kserve
+  oc get pods -n redhat-ods-operator
+  Increase wait: RHOAI_WAIT_TIMEOUT=900 ./deploy.sh --env ./.env --insecure --rhoai"
+}
+
 deploy_rhoai() {
   if [[ "${DEPLOY_RHOAI}" != true ]]; then
     return 0
@@ -292,6 +460,8 @@ deploy_rhoai() {
   [[ -f "${script_py}" ]] || die "Missing ${script_py}"
 
   if [[ "${DRY_RUN}" == true ]]; then
+    echo "DRY-RUN ensure_rhoai_kserve (DSC kserve=Managed + wait for CRDs)"
+    echo "DRY-RUN free_single_gpu (stop llama / other GPU InferenceServices + scale GPU deploys)"
     echo "DRY-RUN ensure ngc-secret + PVC tfm-checkpoint from model/decoder-foundation-model"
     echo "DRY-RUN ConfigMap tfm-embed-script from ${script_py}"
     echo "DRY-RUN oc apply ${rhoai_dir}/*.yaml (namespace=${NAMESPACE})"
@@ -299,10 +469,8 @@ deploy_rhoai() {
     return 0
   fi
 
-  if ! oc api-resources --api-group=serving.kserve.io 2>/dev/null | grep -q ServingRuntime; then
-    die "OpenShift AI / KServe CRDs not found (ServingRuntime). Enable RHOAI single-model serving first."
-  fi
-
+  ensure_rhoai_kserve
+  free_single_gpu
   ensure_ngc_secret
   ensure_tfm_checkpoint_pvc
 

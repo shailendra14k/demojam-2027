@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
     --insecure)          INSECURE=true; shift ;;
     --delete-namespace)  DELETE_NAMESPACE=true; shift ;;
     -h|--help)
-      echo "Usage: ./destroy.sh --env ./env [--delete-namespace]"
+      echo "Usage: ./destroy.sh --env ./.env [--delete-namespace]"
       exit 0
       ;;
     *) die "Unknown argument: $1" ;;

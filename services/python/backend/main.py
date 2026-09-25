@@ -916,18 +916,505 @@ def metrics():
 def pipeline_status():
     REQUESTS.labels(endpoint="pipeline").inc()
     stages = ["DATABASE", "CDC", "STREAM", "ENRICH", "ANALYZE", "RISK", "ALERT"]
+    events_n = len(EVENTS)
+    alerts_n = len(ALERTS)
+    stage_activity = {
+        "DATABASE": events_n + alerts_n,
+        "CDC": events_n + alerts_n if PIPELINE_MODE == "cdc" else 0,
+        "STREAM": events_n + alerts_n if PIPELINE_MODE == "cdc" else events_n,
+        "ENRICH": events_n,
+        "ANALYZE": events_n,
+        "RISK": events_n,
+        "ALERT": alerts_n,
+    }
+
+    deploy_health = _pipeline_component_health()
+    tfm_mode = (os.getenv("TFM_MODE") or "hashed").strip().lower()
+    tfm_url = (os.getenv("TFM_EMBED_URL") or "").strip()
+    ai_mode = (os.getenv("AI_MODE") or "mock").strip().lower()
+    tfm_ok, tfm_detail = _probe_tfm_embed(tfm_mode, tfm_url, deploy_health)
+    # Canonical TFM entry for the flow diagram (hashed/mock = optional healthy).
+    deploy_health["tfm-embed"] = {"ok": tfm_ok, "detail": tfm_detail}
+
+    # Stage strip: prefer live component probes over static PIPELINE_STATUS.
+    stage_keys: dict[str, list[str]] = {
+        "DATABASE": ["casino-db"],
+        "CDC": ["sentinel-connect", "casino-postgres-connector"],
+        "STREAM": ["sentinel-kafka"],
+        "ENRICH": ["sentinel-event-normalizer", "sentinel-feature-engine"],
+        "ANALYZE": ["sentinel-aml-rules", "sentinel-ml-engine"],
+        "RISK": ["sentinel-risk-engine"],
+        "ALERT": ["sentinel-alert-service"],
+    }
+    stage_list = []
+    for s in stages:
+        keys = stage_keys.get(s) or []
+        live = [deploy_health[k] for k in keys if k in deploy_health]
+        if live:
+            ok = all(bool(h.get("ok")) for h in live)
+            detail = "; ".join(str(h.get("detail") or "") for h in live if h.get("detail"))
+        else:
+            st = PIPELINE_STATUS.get(s) or {}
+            ok = bool(st.get("ok"))
+            detail = str(st.get("detail") or "")
+        stage_list.append(
+            {
+                "name": s,
+                "ok": ok,
+                "detail": detail or None,
+                "activity": stage_activity.get(s, 0),
+            }
+        )
+
+    def _node(
+        nid: str,
+        label: str,
+        *,
+        kind: str,
+        stage: str | None = None,
+        deploy: str | None = None,
+        ok: bool | None = None,
+        detail: str = "",
+        activity: int = 0,
+        optional: bool = False,
+    ) -> dict[str, Any]:
+        # Live probes always win when present (never mask a down CR/deploy with static ok).
+        if deploy and deploy in deploy_health:
+            dh = deploy_health[deploy]
+            ok = bool(dh.get("ok"))
+            live_detail = str(dh.get("detail") or "").strip()
+            if live_detail:
+                detail = live_detail if not detail else f"{live_detail} | {detail}"
+        elif stage and stage in PIPELINE_STATUS and ok is None:
+            ok = bool(PIPELINE_STATUS[stage].get("ok"))
+            detail = detail or str(PIPELINE_STATUS[stage].get("detail") or "")
+        if ok is None:
+            ok = True
+        flowing = bool(ok) and activity > 0
+        return {
+            "id": nid,
+            "label": label,
+            "kind": kind,
+            "stage": stage,
+            "ok": bool(ok),
+            "status": "healthy" if ok else "down",
+            "detail": detail,
+            "activity": activity,
+            "flowing": flowing,
+            "optional": optional,
+        }
+
+    cdc_detail = ""
+    conn = deploy_health.get("casino-postgres-connector")
+    if conn:
+        cdc_detail = f"connector={'ok' if conn.get('ok') else 'down'}: {conn.get('detail') or ''}"
+
+    components = [
+        _node(
+            "db",
+            "PostgreSQL",
+            kind="storage",
+            stage="DATABASE",
+            deploy="casino-db",
+            activity=stage_activity["DATABASE"],
+        ),
+        _node(
+            "cdc",
+            "Debezium Connect",
+            kind="ingest",
+            stage="CDC",
+            deploy="sentinel-connect",
+            detail=cdc_detail,
+            activity=stage_activity["CDC"],
+        ),
+        _node(
+            "kafka",
+            "AMQ Streams",
+            kind="bus",
+            stage="STREAM",
+            deploy="sentinel-kafka",
+            activity=stage_activity["STREAM"],
+        ),
+        _node(
+            "normalizer",
+            "event-normalizer",
+            kind="service",
+            stage="STREAM",
+            deploy="sentinel-event-normalizer",
+            activity=stage_activity["STREAM"],
+        ),
+        _node(
+            "features",
+            "feature-engine",
+            kind="service",
+            stage="ENRICH",
+            deploy="sentinel-feature-engine",
+            activity=stage_activity["ENRICH"],
+        ),
+        _node(
+            "rules",
+            "aml-rules",
+            kind="service",
+            stage="ANALYZE",
+            deploy="sentinel-aml-rules",
+            activity=stage_activity["ANALYZE"],
+        ),
+        _node(
+            "ml",
+            "ml-engine",
+            kind="service",
+            stage="ANALYZE",
+            deploy="sentinel-ml-engine",
+            detail=f"AI_MODE={ai_mode} TFM_MODE={tfm_mode}",
+            activity=stage_activity["ANALYZE"],
+        ),
+        _node(
+            "tfm",
+            "TFM embeddings",
+            kind="gpu",
+            deploy="tfm-embed",
+            detail=tfm_detail,
+            activity=stage_activity["ANALYZE"] if tfm_mode == "http" and tfm_ok else 0,
+            optional=tfm_mode != "http",
+        ),
+        _node(
+            "risk",
+            "risk-engine",
+            kind="service",
+            stage="RISK",
+            deploy="sentinel-risk-engine",
+            activity=stage_activity["RISK"],
+        ),
+        _node(
+            "alerts",
+            "alert-service",
+            kind="service",
+            stage="ALERT",
+            deploy="sentinel-alert-service",
+            activity=stage_activity["ALERT"],
+        ),
+        _node(
+            "api",
+            "sentinel-api",
+            kind="api",
+            deploy="sentinel-api",
+            activity=events_n + alerts_n,
+        ),
+        _node(
+            "ui",
+            "Casino Guard UI",
+            kind="ui",
+            deploy="sentinel-ui",
+            activity=0,
+        ),
+    ]
+
+    # Edges: traffic flows left→right when both ends are healthy and source has activity
+    by_id = {c["id"]: c for c in components}
+    edge_defs = [
+        ("db", "cdc"),
+        ("cdc", "kafka"),
+        ("kafka", "normalizer"),
+        ("normalizer", "features"),
+        ("features", "rules"),
+        ("features", "ml"),
+        ("ml", "tfm"),
+        ("tfm", "ml"),
+        ("rules", "risk"),
+        ("ml", "risk"),
+        ("risk", "alerts"),
+        ("alerts", "api"),
+        ("api", "ui"),
+    ]
+    edges = []
+    for src, dst in edge_defs:
+        a, b = by_id.get(src), by_id.get(dst)
+        if not a or not b:
+            continue
+        if a.get("optional") and not a.get("ok"):
+            continue
+        if dst == "tfm" and tfm_mode != "http":
+            continue
+        if src == "tfm" and tfm_mode != "http":
+            continue
+        flowing = bool(a.get("ok") and b.get("ok") and (a.get("activity") or 0) > 0)
+        edges.append({"from": src, "to": dst, "flowing": flowing})
+
     return {
         "pipeline_mode": PIPELINE_MODE,
-        "stages": [{"name": s, **PIPELINE_STATUS[s]} for s in stages],
+        "stages": stage_list,
+        "components": components,
+        "edges": edges,
+        "tfm": {"mode": tfm_mode, "url": tfm_url, "ok": tfm_ok, "detail": tfm_detail},
+        "ai_mode": ai_mode,
         "uptime_seconds": int(time.time() - START_TIME),
-        "events_buffered": len(EVENTS),
+        "events_buffered": events_n,
         "open_alerts": sum(1 for a in ALERTS if a["status"] == "OPEN"),
         "note": (
-            "OpenShift CDC path: Postgres → Debezium → Kafka services"
+            "OpenShift CDC path: Postgres → Debezium → Kafka → microservices"
             if PIPELINE_MODE == "cdc"
             else "Local in-process path (API-only); not used on OpenShift"
         ),
     }
+
+
+def _pipeline_component_health() -> dict[str, dict[str, Any]]:
+    """Live health for pipeline components (in-cluster). Empty when not on OpenShift.
+
+    Combines Deployment Ready, CR Ready conditions, TCP reachability, SQL ping,
+    and HTTP /healthz where a Service exists.
+    """
+    try:
+        ns, headers, ca = _k8s_headers()
+    except HTTPException:
+        return {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+    from urllib import error as urlerror
+    from urllib import request as urlrequest
+    import socket
+    import ssl
+
+    ctx = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
+    out: dict[str, dict[str, Any]] = {}
+
+    def _get(path: str, timeout: float = 3.0) -> dict[str, Any] | None:
+        url = f"https://kubernetes.default.svc{path}"
+        try:
+            req = urlrequest.Request(url, headers=headers, method="GET")
+            with urlrequest.urlopen(req, context=ctx, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _ready_condition(status: dict[str, Any] | None) -> tuple[bool, str]:
+        if not status:
+            return False, "no status"
+        for c in status.get("conditions") or []:
+            if c.get("type") == "Ready":
+                ok = str(c.get("status")).lower() == "true"
+                reason = c.get("reason") or c.get("message") or ("Ready" if ok else "NotReady")
+                return ok, str(reason)[:120]
+        return False, "no Ready condition"
+
+    def _deploy(name: str) -> tuple[bool, str]:
+        body = _get(f"/apis/apps/v1/namespaces/{ns}/deployments/{name}")
+        if not body:
+            return False, "Deployment missing/unreachable"
+        st = body.get("status") or {}
+        ready = int(st.get("readyReplicas") or 0)
+        desired = int(st.get("replicas") or (body.get("spec") or {}).get("replicas") or 0)
+        return ready >= 1, f"deploy {ready}/{desired or 1} ready"
+
+    def _tcp(host: str, port: int, timeout: float = 2.0) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _http(url: str, timeout: float = 3.0) -> tuple[bool, str]:
+        try:
+            req = urlrequest.Request(url, method="GET")
+            with urlrequest.urlopen(req, timeout=timeout) as resp:
+                if 200 <= resp.status < 300:
+                    return True, f"HTTP {resp.status}"
+                return False, f"HTTP {resp.status}"
+        except urlerror.HTTPError as exc:
+            return False, f"HTTP {exc.code}"
+        except Exception as exc:  # noqa: BLE001
+            return False, f"{exc.__class__.__name__}"
+
+    def _cr_first(paths: list[str]) -> dict[str, Any] | None:
+        for p in paths:
+            body = _get(p)
+            if body is not None:
+                return body
+        return None
+
+    # --- PostgreSQL: Deployment + live SQL ---
+    db_deploy_ok, db_deploy_detail = _deploy("casino-db")
+    db_tcp = _tcp("casino-db", 5432)
+    db_sql_ok, db_sql_detail = False, "skip"
+    try:
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(database_url(), pool_pre_ping=True)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_sql_ok, db_sql_detail = True, "SELECT 1 ok"
+    except Exception as exc:  # noqa: BLE001
+        db_sql_ok, db_sql_detail = False, f"SQL {exc.__class__.__name__}"
+    db_ok = db_deploy_ok and db_tcp and db_sql_ok
+    out["casino-db"] = {
+        "ok": db_ok,
+        "detail": f"{db_deploy_detail}; tcp={db_tcp}; {db_sql_detail}",
+    }
+
+    # --- AMQ Streams Kafka CR + bootstrap TCP ---
+    kafka_body = _cr_first(
+        [
+            f"/apis/kafka.strimzi.io/v1/namespaces/{ns}/kafkas/sentinel-kafka",
+            f"/apis/kafka.strimzi.io/v1beta2/namespaces/{ns}/kafkas/sentinel-kafka",
+        ]
+    )
+    kafka_cr_ok, kafka_cr_detail = _ready_condition((kafka_body or {}).get("status"))
+    if kafka_body is None:
+        kafka_cr_ok, kafka_cr_detail = False, "Kafka CR unreachable"
+    kafka_tcp = _tcp("sentinel-kafka-kafka-bootstrap", 9092)
+    out["sentinel-kafka"] = {
+        "ok": kafka_cr_ok and kafka_tcp,
+        "detail": f"CR {kafka_cr_detail}; bootstrap tcp={kafka_tcp}",
+    }
+
+    # --- KafkaConnect CR + Deployment + REST ---
+    connect_body = _cr_first(
+        [
+            f"/apis/kafka.strimzi.io/v1/namespaces/{ns}/kafkaconnects/sentinel-connect",
+            f"/apis/kafka.strimzi.io/v1beta2/namespaces/{ns}/kafkaconnects/sentinel-connect",
+        ]
+    )
+    connect_cr_ok, connect_cr_detail = _ready_condition((connect_body or {}).get("status"))
+    if connect_body is None:
+        connect_cr_ok, connect_cr_detail = False, "KafkaConnect CR unreachable"
+    connect_deploy_ok, connect_deploy_detail = _deploy("sentinel-connect-connect")
+    if not connect_deploy_ok:
+        # AMQ Streams 3.x / Strimzi often uses StrimziPodSet (no Deployment).
+        pods = _get(
+            f"/api/v1/namespaces/{ns}/pods?labelSelector="
+            f"strimzi.io/cluster%3Dsentinel-connect,strimzi.io/kind%3DKafkaConnect"
+        )
+        running = 0
+        if pods:
+            for p in pods.get("items") or []:
+                phase = (p.get("status") or {}).get("phase")
+                ready = all(
+                    (c.get("ready") is True)
+                    for c in ((p.get("status") or {}).get("containerStatuses") or [])
+                ) if (p.get("status") or {}).get("containerStatuses") else False
+                if phase == "Running" and ready:
+                    running += 1
+        if running >= 1:
+            connect_deploy_ok, connect_deploy_detail = True, f"pod {running} ready"
+        else:
+            connect_deploy_detail = "no Connect Deployment/pod ready"
+    connect_http_ok, connect_http_detail = _http(
+        "http://sentinel-connect-connect-api:8083/", timeout=3.0
+    )
+    out["sentinel-connect"] = {
+        "ok": connect_cr_ok and (connect_deploy_ok or connect_http_ok),
+        "detail": (
+            f"CR {connect_cr_detail}; {connect_deploy_detail}; "
+            f"REST {connect_http_detail}"
+        ),
+    }
+
+    # --- Debezium KafkaConnector ---
+    connector_body = _cr_first(
+        [
+            f"/apis/kafka.strimzi.io/v1/namespaces/{ns}/kafkaconnectors/casino-postgres-connector",
+            f"/apis/kafka.strimzi.io/v1beta2/namespaces/{ns}/kafkaconnectors/casino-postgres-connector",
+        ]
+    )
+    if connector_body is not None:
+        c_ok, c_detail = _ready_condition(connector_body.get("status"))
+        out["casino-postgres-connector"] = {"ok": c_ok, "detail": f"KafkaConnector {c_detail}"}
+    else:
+        out["casino-postgres-connector"] = {
+            "ok": False,
+            "detail": "KafkaConnector CR unreachable",
+        }
+
+    # --- Microservice Deployments (Kafka workers have no HTTP Service) ---
+    for name in (
+        "sentinel-event-normalizer",
+        "sentinel-feature-engine",
+        "sentinel-aml-rules",
+        "sentinel-ml-engine",
+        "sentinel-risk-engine",
+        "sentinel-alert-service",
+        "sentinel-api",
+        "sentinel-ui",
+    ):
+        ok, detail = _deploy(name)
+        # Live HTTP for API/UI (have ClusterIP Services)
+        if name == "sentinel-api":
+            h_ok, h_detail = _http("http://sentinel-api:8080/healthz")
+            ok = ok and h_ok
+            detail = f"{detail}; {h_detail}"
+        elif name == "sentinel-ui":
+            h_ok, h_detail = _http("http://sentinel-ui:8080/")
+            # UI may not expose /healthz; treat 2xx or any HTTP response from nginx as up
+            if h_ok:
+                ok = ok and True
+                detail = f"{detail}; {h_detail}"
+            else:
+                # Deployment Ready alone is enough if HTTP blocked
+                detail = f"{detail}; http={h_detail}"
+        out[name] = {"ok": ok, "detail": detail}
+
+    # --- KServe InferenceService (TFM) ---
+    isvc = _get(f"/apis/serving.kserve.io/v1beta1/namespaces/{ns}/inferenceservices/tfm-embed")
+    if isvc is not None:
+        isvc_ok, isvc_detail = _ready_condition(isvc.get("status"))
+        # Predictor Deployment name varies; also try common KServe RawDeployment name
+        pred_ok, pred_detail = _deploy("tfm-embed-predictor")
+        if not pred_ok:
+            # Some clusters name it tfm-embed-predictor-xxxxx; check ISVC ready only
+            pred_detail = "predictor deploy not found (CR only)"
+        http_ok, http_detail = _http("http://tfm-embed-predictor:8080/healthz")
+        combined = isvc_ok and (pred_ok or http_ok)
+        detail = f"InferenceService {isvc_detail}; {pred_detail}; healthz {http_detail}"
+        out["tfm-embed"] = {"ok": combined, "detail": detail}
+        out["tfm-embed-predictor"] = out["tfm-embed"]
+    # Absent ISVC is fine when TFM_MODE!=http; pipeline_status merges via _probe_tfm_embed
+
+    return out
+
+
+def _probe_tfm_embed(
+    tfm_mode: str,
+    tfm_url: str,
+    deploy_health: dict[str, dict[str, Any]] | None = None,
+) -> tuple[bool, str]:
+    """Combine InferenceService probe + live /healthz when TFM_MODE=http."""
+    if tfm_mode != "http":
+        return True, f"TFM_MODE={tfm_mode} (no GPU InferenceService required)"
+
+    parts: list[str] = []
+    ok = True
+    dh = (deploy_health or {}).get("tfm-embed") or (deploy_health or {}).get("tfm-embed-predictor")
+    if dh:
+        ok = ok and bool(dh.get("ok"))
+        if dh.get("detail"):
+            parts.append(str(dh["detail"]))
+    else:
+        ok = False
+        parts.append("InferenceService tfm-embed not found")
+
+    if not tfm_url:
+        return False, "; ".join(parts + ["TFM_EMBED_URL empty"])
+
+    from urllib import request as urlrequest
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(tfm_url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        health = f"{base}/healthz"
+        req = urlrequest.Request(health, method="GET")
+        with urlrequest.urlopen(req, timeout=3) as resp:
+            if 200 <= resp.status < 300:
+                parts.append(f"healthy @ {health}")
+            else:
+                ok = False
+                parts.append(f"HTTP {resp.status} @ {health}")
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        parts.append(f"healthz unreachable: {exc.__class__.__name__}")
+
+    return ok, "; ".join(parts)
 
 
 def _parse_dt(value: Any) -> datetime | None:
