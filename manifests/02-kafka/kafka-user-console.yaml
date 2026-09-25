@@ -1,3 +1,7 @@
+# Streams Console connects to the secure (SCRAM) listener as this user.
+# With Kafka authorization.type=simple, SCRAM users need ACLs — auth alone is not enough.
+# Without cluster/topic Describe, the UI shows: "Not Authorized / Cluster authorization failed"
+# (browser may also show ANONYMOUS on the Console HTTP API; that is separate from Kafka ACLs).
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaUser
 metadata:
@@ -8,3 +12,36 @@ metadata:
 spec:
   authentication:
     type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      # Overview / brokers / node pools
+      - resource:
+          type: cluster
+        operations:
+          - Describe
+          - DescribeConfigs
+      # All topics (casino.*, aml.*, connect internals, consumer offsets, …)
+      - resource:
+          type: topic
+          name: "*"
+          patternType: literal
+        operations:
+          - Read
+          - Describe
+          - DescribeConfigs
+      # Consumer groups
+      - resource:
+          type: group
+          name: "*"
+          patternType: literal
+        operations:
+          - Read
+          - Describe
+      # Transactional IDs (harmless for read-only console)
+      - resource:
+          type: transactionalId
+          name: "*"
+          patternType: literal
+        operations:
+          - Describe

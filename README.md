@@ -53,7 +53,9 @@ With `./deploy.sh --rhoai`, `sentinel-ml-engine` tokenizes on CPU and calls the 
 | **NVIDIA TFM**       | 512-d transaction embeddings                   | Default `TFM_MODE=hashed`; GPU: OpenShift AI InferenceService + `model/serve_embeddings.py` |
 
 
-Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model) — clone/sync with `../nvidia-tfm/clone-nvidia-tfm.sh`. See `[../nvidia-tfm/OCP-1GPU.md](../nvidia-tfm/OCP-1GPU.md)`.
+Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model) — clone/sync with `../nvidia-tfm/clone-nvidia-tfm.sh`. See [`../nvidia-tfm/OCP-1GPU.md`](../nvidia-tfm/OCP-1GPU.md).
+
+**Read this first for a plain-language walkthrough:** [`../nvidia-tfm/TFM.md`](../nvidia-tfm/TFM.md) (what embeddings are, how TFM fits the AML score, and what this repo wired up).
 
 
 | Env                       | Use                                    |
