@@ -6,8 +6,8 @@ This package provides a pluggable **BehavioralModelAdapter**:
 |------|-------|--------------|-------|
 | `mock` | `MockBehavioralAdapter` | No | Deterministic heuristics for demos |
 | `cpu` | `CpuBehavioralAdapter` | No | sklearn IsolationForest |
-| `nvidia` / `gpu` | `NvidiaBehavioralAdapter` | Optional | Calls `NVIDIA_TFM_ENDPOINT` if set; otherwise falls back to mock |
+| `nvidia` / `gpu` | `NvidiaBehavioralAdapter` | Optional | Uses `sentinel.tfm` with `TFM_MODE=http` + `TFM_EMBED_URL` (GPU `tfm-embed`); falls back to mock if unset |
 
-Set `AI_MODE=mock|cpu|nvidia` via ConfigMap / `.env`.
+Set `AI_MODE=mock|cpu|nvidia` via ConfigMap / `.env`. For GPU cutover also set `TFM_MODE=http` and `TFM_EMBED_URL` (see `nvidia-tfm/OCP-1GPU.md`).
 
 NVIDIA Transaction Foundation Model integration is **optional**. The PoC is fully functional without it.

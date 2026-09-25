@@ -2,10 +2,10 @@
 
 Microservice AML demo on OpenShift: PostgreSQL → Debezium → AMQ Streams → streaming services → investigator UI.
 
-## Fresh deploy
+## Fresh deploy (CPU default)
 
 ```bash
-cd casino-sentinel
+cd demojam-2027
 cp env.example env          # set OCP_API and OCP_TOKEN; do not commit env
 # Optional: retrain before image build
 #   cd model && python train_models.py && cd ..
@@ -16,6 +16,35 @@ chmod +x deploy.sh destroy.sh demo.sh smoke-test.sh status.sh
 ```
 
 Requires `model/artifacts/*.joblib` (checked in or produced by `model/train_models.py`) — baked into `sentinel-python`.
+
+Defaults: `AI_MODE=mock`, `TFM_MODE=hashed` (no GPU).
+
+## Fresh deploy with NVIDIA TFM (1 GPU / OpenShift AI)
+
+Laptop prep (once) — see [`../nvidia-tfm/OCP-1GPU.md`](../nvidia-tfm/OCP-1GPU.md):
+
+```bash
+# from demoJam/ — clones/updates nvidia-tfm/upstream/ (pristine), COPIES checkpoint into demojam-2027
+brew install git-lfs && git lfs install   # if needed
+./nvidia-tfm/clone-nvidia-tfm.sh         # → demojam-2027/model/decoder-foundation-model/
+# New NVIDIA release later? Re-run clone script (Step 1b in OCP-1GPU.md), then --rhoai again.
+```
+
+Cluster needs: GPU Operator, OpenShift AI single-model serving (KServe), NGC key.
+
+```bash
+cd demojam-2027
+# env must include NGC_API_KEY=nvapi-...  (creates ngc-secret)
+./deploy.sh --env ./env --insecure --rhoai
+```
+
+`--rhoai` creates PVC `tfm-checkpoint`, loads the checkpoint, mounts `model/serve_embeddings.py`, applies `manifests/08-openshift-ai/*`, and sets `TFM_MODE=http` / `AI_MODE=nvidia` on `casino-config`.
+
+| Path | Role |
+|---|---|
+| `model/artifacts/*.joblib` | XGBoost / IsolationForest (CPU, in `sentinel-python`) |
+| `model/decoder-foundation-model/` | NVIDIA TFM weights (PVC; not baked into python image) |
+| `model/serve_embeddings.py` | Embedding HTTP server for InferenceService |
 
 ## Architecture
 
@@ -31,13 +60,13 @@ Postgres (casino-db)
   → sentinel-api + sentinel-ui
 ```
 
-XGBoost / IsolationForest: train offline in `model/` (`python train_models.py`), bake `model/artifacts/*.joblib` into `sentinel-python`. Runtime scoring is `sentinel.aml_model` (load/predict only).  
-NVIDIA TFM: set `TFM_MODE` / `TFM_EMBED_URL` on ConfigMap `casino-config` (see `nvidia-tfm/OCP-1GPU.md`).
+With `--rhoai`, ml-engine tokenizes on CPU and calls  
+`http://tfm-embed-predictor.<ns>.svc:8080/v1/embeddings` (GPU InferenceService).
 
 | Env | Use |
 |---|---|
 | `TFM_MODE=hashed` | Default CPU stand-in embedding |
-| `TFM_MODE=http` | GPU infer service (`TFM_EMBED_URL`) |
+| `TFM_MODE=http` | GPU InferenceService (`TFM_EMBED_URL`) |
 | `AI_MODE=mock\|cpu\|nvidia` | Behavioral adapter mode (ml-engine) |
 
 ## After deploy (optional helpers)
@@ -67,7 +96,7 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 |---|---|
 | `deploy.sh` | Install |
 | `destroy.sh` | Tear down |
-| `env.example` | Copy to `env` |
+| `env.example` | Copy to `env` (`OCP_API`, `OCP_TOKEN`, optional `NGC_API_KEY`) |
 | `demo.sh` / `smoke-test.sh` / `status.sh` | Post-deploy only (see above) |
 
 ### SQL
@@ -97,6 +126,7 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 | 10 | `manifests/06-apps/services.yaml` | microservices + API + simulator |
 | 11 | `manifests/06-apps/ui.yaml` | UI + Routes |
 | 12 | `manifests/07-monitoring/monitoring.yaml` | Grafana stub |
+| 13 | `manifests/08-openshift-ai/*` | **With `--rhoai`:** ServingRuntime + InferenceService `tfm-embed` |
 
 ### Images
 
@@ -104,6 +134,7 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 |---|---|---|
 | repo root (`services/python/Containerfile` + `model/artifacts/`) | `sentinel-python:latest` | all python services + API |
 | `ui/` (`ui/Containerfile`) | `sentinel-ui:latest` | `sentinel-ui` |
+| NeMo NGC (via ServingRuntime) | InferenceService `tfm-embed` | TFM embeddings (1 GPU) |
 
 ## Flags
 
@@ -112,6 +143,7 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 | `--install-operators` | OLM Subscriptions for AMQ Streams + Console |
 | `--skip-console` | Skip Streams Console |
 | `--skip-builds` | Reuse existing ImageStreams |
+| `--rhoai` | TFM on OpenShift AI (PVC + ngc-secret + `08-openshift-ai/*`); needs clone + `NGC_API_KEY` |
 | `--insecure` | Skip API TLS verify |
 | `--dry-run` | Print only |
 

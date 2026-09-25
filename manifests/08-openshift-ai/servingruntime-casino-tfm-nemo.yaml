@@ -1,0 +1,74 @@
+# Prerequisites (or use ./deploy.sh --rhoai which does these):
+#   - OpenShift AI single-model serving (KServe) enabled
+#   - PVC tfm-checkpoint with decoder-foundation-model/ (from model/ via deploy.sh)
+#   - Secret ngc-secret (NGC_API_KEY in env) + linked for pull
+#   - ConfigMap tfm-embed-script from model/serve_embeddings.py
+# Laptop: ../nvidia-tfm/clone-nvidia-tfm.sh → model/decoder-foundation-model/
+# Docs: ../nvidia-tfm/OCP-1GPU.md
+#
+# Dashboard (Models → Deployments) needs template-* annotations below;
+# openshift.io/display-name alone shows as "Unknown Serving Runtime".
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: casino-tfm-nemo
+  namespace: casino-sentinel
+  labels:
+    opendatahub.io/dashboard: "true"
+    app.kubernetes.io/part-of: casino-sentinel
+  annotations:
+    openshift.io/display-name: Casino Sentinel TFM (NeMo)
+    # Required for ODH/RHOAI Deployments table "Deployment resource" column.
+    # Use template-display-name only — do NOT set template-name unless a matching
+    # Template CR exists in Settings → Serving runtimes (else UI shows
+    # "template is no longer available").
+    opendatahub.io/template-display-name: Casino Sentinel TFM (NeMo)
+    opendatahub.io/serving-runtime-scope: project
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/runtime-version: "nemo-25.09.01"
+    opendatahub.io/modelServingSupport: '["Single"]'
+spec:
+  multiModel: false
+  supportedModelFormats:
+    - name: casino-tfm
+      version: "1"
+      autoSelect: true
+  containers:
+    - name: kserve-container
+      image: nvcr.io/nvidia/nemo:25.09.01
+      imagePullPolicy: IfNotPresent
+      command: ["python", "/opt/tfm/serve_embeddings.py"]
+      env:
+        - name: PORT
+          value: "8080"
+        # KServe mounts storageUri (pvc://tfm-checkpoint/) at /mnt/models
+        - name: TFM_CHECKPOINT
+          value: /mnt/models/decoder-foundation-model
+        - name: TFM_PAD_ID
+          value: "0"
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 10
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 60
+        periodSeconds: 20
+      volumeMounts:
+        - name: script
+          mountPath: /opt/tfm/serve_embeddings.py
+          subPath: serve_embeddings.py
+  volumes:
+    - name: script
+      configMap:
+        name: tfm-embed-script
+  imagePullSecrets:
+    - name: ngc-secret

@@ -149,53 +149,111 @@ class CpuBehavioralAdapter(BehavioralModelAdapter):
 
 
 class NvidiaBehavioralAdapter(BehavioralModelAdapter):
-    """Optional NVIDIA Transaction Foundation Model adapter (not required for demo)."""
+    """NVIDIA Transaction Foundation Model via ``sentinel.tfm`` (TFM_MODE / TFM_EMBED_URL).
+
+    Prefer ConfigMap keys ``TFM_EMBED_URL`` + ``TFM_MODE=http`` (GPU ``tfm-embed`` service).
+    Legacy ``NVIDIA_TFM_ENDPOINT`` is accepted as a URL alias only (no API key required).
+    """
 
     name = "nvidia"
 
     def __init__(self) -> None:
-        self.endpoint = os.getenv("NVIDIA_TFM_ENDPOINT", "")
-        self.api_key = os.getenv("NVIDIA_API_KEY", "")
+        self.embed_url = (
+            os.getenv("TFM_EMBED_URL") or os.getenv("NVIDIA_TFM_ENDPOINT") or ""
+        ).strip()
         self._fallback = MockBehavioralAdapter()
+        if self.embed_url and (os.getenv("TFM_MODE") or "").lower() in ("", "hashed"):
+            # URL set but mode left at default — force HTTP so score_tfm hits the GPU service.
+            os.environ["TFM_MODE"] = "http"
+            try:
+                from sentinel.config import settings as _settings
+
+                _settings.tfm_mode = "http"
+                if not _settings.tfm_embed_url:
+                    _settings.tfm_embed_url = self.embed_url
+            except Exception:  # noqa: BLE001
+                pass
+            log.info("TFM_EMBED_URL set; overriding TFM_MODE=http for nvidia adapter")
 
     def score(self, player_id: str, event: dict[str, Any], features: dict[str, float],
               event_id: str, correlation_id: str) -> BehavioralScore:
-        if not self.endpoint or not self.api_key:
+        if not self.embed_url and (os.getenv("TFM_MODE") or "hashed").lower() == "hashed":
             fb = self._fallback.score(player_id, event, features, event_id, correlation_id)
             fb.adapter = "nvidia-fallback-mock"
-            fb.explanation["note"] = "NVIDIA endpoint not configured; using mock fallback"
+            fb.explanation["note"] = "TFM_EMBED_URL not set; using mock fallback"
             return fb
-        # Placeholder HTTP call — real TFM wiring is environment-specific
         try:
-            import urllib.request
+            from sentinel import tfm as sentinel_tfm
+            from sentinel.models import EnrichedEvent, PlayerFeatures
 
-            payload = {
-                "player_id": player_id,
-                "event": event,
-                "features": features,
-            }
-            req = urllib.request.Request(
-                self.endpoint,
-                data=__import__("json").dumps(payload).encode(),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
-                },
-                method="POST",
+            created_raw = event.get("created_at") or event.get("timestamp")
+            if isinstance(created_raw, datetime):
+                created_at = created_raw if created_raw.tzinfo else created_raw.replace(tzinfo=timezone.utc)
+            elif isinstance(created_raw, str) and created_raw:
+                created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            else:
+                created_at = datetime.now(timezone.utc)
+
+            enriched = EnrichedEvent(
+                event_id=str(event_id or event.get("event_id") or "unknown"),
+                player_id=str(player_id),
+                source_table=str(event.get("source_table") or event.get("event_source") or "transactions"),
+                canonical_type=str(
+                    event.get("canonical_type") or event.get("event_type") or "UNKNOWN"
+                ),
+                amount=float(event.get("amount") or 0),
+                currency=str(event.get("currency") or "USD"),
+                location=str(event.get("location") or ""),
+                payment_method=str(
+                    event.get("payment_method")
+                    or event.get("payment_method_id")
+                    or event.get("channel")
+                    or ""
+                ),
+                created_at=created_at,
+                raw=event.get("raw") if isinstance(event.get("raw"), dict) else {},
+                pep_flag=bool(event.get("is_pep") or event.get("pep_flag")),
+                watchlist_hit=bool(event.get("watchlist_hit")),
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = __import__("json").loads(resp.read().decode())
+            pf = PlayerFeatures(
+                player_id=str(player_id),
+                cash_in_24h=float(
+                    features.get("w24h_deposit_sum") or features.get("cash_in_24h") or 0
+                ),
+                total_wagered_24h=float(
+                    features.get("w24h_wager_sum") or features.get("total_wagered_24h") or 0
+                ),
+                just_below_10k_count_24h=int(
+                    features.get("just_below_10k_count_24h")
+                    or features.get("w24h_just_below_10k")
+                    or 0
+                ),
+            )
+            score_100, factors, _emb = sentinel_tfm.score_tfm(enriched, pf, None)
+            backend = "unknown"
+            if factors and isinstance(factors[0], dict):
+                backend = str(factors[0].get("backend") or "unknown")
+            score = max(0.0, min(1.0, float(score_100) / 100.0))
+            flags = ["nvidia_tfm"] if score >= 0.55 else []
+            if backend == "hashed" and self.embed_url:
+                flags.append("tfm_http_fallback_hashed")
             return BehavioralScore(
-                event_id=event_id,
-                player_id=player_id,
-                correlation_id=correlation_id,
+                event_id=str(event_id or enriched.event_id),
+                player_id=str(player_id),
+                correlation_id=str(correlation_id or ""),
                 timestamp=datetime.now(timezone.utc),
                 adapter=self.name,
-                score=float(data.get("score", 0.5)),
-                anomaly_flags=list(data.get("flags", [])),
-                explanation={"method": "NVIDIA TFM", "raw": data},
+                score=score,
+                anomaly_flags=flags,
+                explanation={
+                    "method": "sentinel.tfm",
+                    "backend": backend,
+                    "tfm_score_100": score_100,
+                    "factors": factors,
+                },
             )
         except Exception as exc:  # noqa: BLE001
+            log.warning("nvidia TFM score failed: %s", exc)
             fb = self._fallback.score(player_id, event, features, event_id, correlation_id)
             fb.adapter = "nvidia-error-fallback"
             fb.explanation["error"] = str(exc)

@@ -11,3 +11,5 @@ ui
 manifests
 model/.venv
 model/.venv312
+model/decoder-foundation-model
+

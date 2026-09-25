@@ -1,0 +1,62 @@
+# OpenShift AI InferenceService — TFM embeddings on NeMo (KServe RawDeployment).
+# Pairs with ServingRuntime casino-tfm-nemo in this directory.
+#
+# After Ready, point Casino AML at the predictor:
+#   TFM_MODE=http
+#   TFM_EMBED_URL=http://tfm-embed-predictor.casino-sentinel.svc:8080/v1/embeddings
+#   AI_MODE=nvidia
+#
+# Note: predictor Service is headless; use pod port 8080 (not Service port 80).
+# Hardware profile name must match an enabled profile (Settings → Hardware profiles).
+# Override via deploy.sh env: HARDWARE_PROFILE_NAME / HARDWARE_PROFILE_NAMESPACE
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: tfm-embed
+  namespace: casino-sentinel
+  labels:
+    opendatahub.io/dashboard: "true"
+    app.kubernetes.io/part-of: casino-sentinel
+    app: tfm-embed
+  annotations:
+    openshift.io/display-name: Casino TFM embeddings
+    serving.kserve.io/deploymentMode: RawDeployment
+    serving.knative.openshift.io/enablePassthrough: "true"
+    serving.kserve.io/stop: "false"
+    security.opendatahub.io/enable-auth: "false"
+    # Required for Deployments table "Hardware profile" column
+    opendatahub.io/hardware-profile-name: gpu-profile
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    imagePullSecrets:
+      - name: ngc-secret
+    model:
+      modelFormat:
+        name: casino-tfm
+      runtime: casino-tfm-nemo
+      # PVC loaded by deploy.sh --rhoai from model/decoder-foundation-model/
+      storageUri: pvc://tfm-checkpoint/
+      resources:
+        requests:
+          cpu: "2"
+          memory: 16Gi
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "4"
+          memory: 32Gi
+          nvidia.com/gpu: "1"
+      volumeMounts:
+        - name: script
+          mountPath: /opt/tfm/serve_embeddings.py
+          subPath: serve_embeddings.py
+    volumes:
+      - name: script
+        configMap:
+          name: tfm-embed-script
+    tolerations:
+      - effect: NoSchedule
+        key: nvidia.com/gpu
+        operator: Exists

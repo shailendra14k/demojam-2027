@@ -2162,6 +2162,147 @@ def score_weights():
     }
 
 
+def _k8s_headers() -> tuple[str, dict[str, str], str]:
+    """In-cluster API access via the pod service account."""
+    import ssl
+    from urllib import request as urlrequest
+
+    token_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+    ns_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+    ca_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+    if not token_path.is_file():
+        raise HTTPException(status_code=503, detail="Not running in-cluster (no service account token)")
+    token = token_path.read_text(encoding="utf-8").strip()
+    ns = ns_path.read_text(encoding="utf-8").strip() if ns_path.is_file() else os.getenv("NAMESPACE", "casino-sentinel")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    return ns, headers, str(ca_path) if ca_path.is_file() else ""
+
+
+def _read_configmap_data() -> dict[str, str]:
+    from urllib import request as urlrequest
+    import ssl
+
+    ns, headers, ca = _k8s_headers()
+    url = f"https://kubernetes.default.svc/api/v1/namespaces/{ns}/configmaps/casino-config"
+    ctx = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
+    req = urlrequest.Request(url, headers=headers, method="GET")
+    with urlrequest.urlopen(req, context=ctx, timeout=15) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return dict(body.get("data") or {})
+
+
+def _patch_configmap_data(updates: dict[str, str]) -> dict[str, str]:
+    from urllib import request as urlrequest
+    import ssl
+
+    ns, headers, ca = _k8s_headers()
+    url = f"https://kubernetes.default.svc/api/v1/namespaces/{ns}/configmaps/casino-config"
+    headers = {**headers, "Content-Type": "application/strategic-merge-patch+json"}
+    payload = json.dumps({"data": updates}).encode("utf-8")
+    ctx = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
+    req = urlrequest.Request(url, data=payload, headers=headers, method="PATCH")
+    with urlrequest.urlopen(req, context=ctx, timeout=15) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return dict(body.get("data") or {})
+
+
+def _restart_simulator_deploy() -> None:
+    """Bump a pod-template annotation so the simulator reloads env promptly."""
+    from urllib import request as urlrequest
+    import ssl
+
+    ns, headers, ca = _k8s_headers()
+    url = (
+        f"https://kubernetes.default.svc/apis/apps/v1/namespaces/{ns}/deployments/sentinel-simulator"
+    )
+    headers = {**headers, "Content-Type": "application/strategic-merge-patch+json"}
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(
+        {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {"casino.sentinel/restartedAt": ts}
+                    }
+                }
+            }
+        }
+    ).encode("utf-8")
+    ctx = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
+    req = urlrequest.Request(url, data=payload, headers=headers, method="PATCH")
+    try:
+        with urlrequest.urlopen(req, context=ctx, timeout=15) as resp:
+            resp.read()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("simulator restart annotation failed: %s", exc)
+
+
+class SimulatorSettingsIn(BaseModel):
+    interval_sec: Optional[float] = Field(default=None, ge=1, le=3600)
+    enabled: Optional[bool] = None
+
+
+@app.get("/api/v1/settings/simulator")
+def get_simulator_settings():
+    """Background dummy traffic interval (ConfigMap casino-config)."""
+    REQUESTS.labels(endpoint="settings_simulator").inc()
+    try:
+        data = _read_configmap_data()
+        interval = float(data.get("SIMULATOR_INTERVAL_SEC") or os.getenv("SIMULATOR_INTERVAL_SEC", "30"))
+        enabled_raw = (data.get("SIMULATOR_ENABLED") or os.getenv("SIMULATOR_ENABLED", "true")).lower()
+        enabled = enabled_raw in {"1", "true", "yes", "on"}
+        return {
+            "interval_sec": interval,
+            "enabled": enabled,
+            "source": "casino-config",
+            "note": "One background transaction every interval_sec when enabled. Demo scenarios are separate.",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Fallback to process env if RBAC/API unavailable
+        interval = float(os.getenv("SIMULATOR_INTERVAL_SEC", "30"))
+        enabled = os.getenv("SIMULATOR_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+        return {
+            "interval_sec": interval,
+            "enabled": enabled,
+            "source": "env",
+            "note": f"ConfigMap read failed ({exc}); showing local env",
+        }
+
+
+@app.patch("/api/v1/settings/simulator")
+def patch_simulator_settings(body: SimulatorSettingsIn):
+    """Update SIMULATOR_* on casino-config (picked up by sentinel-simulator)."""
+    REQUESTS.labels(endpoint="settings_simulator_patch").inc()
+    if body.interval_sec is None and body.enabled is None:
+        raise HTTPException(status_code=400, detail="Provide interval_sec and/or enabled")
+    updates: dict[str, str] = {}
+    if body.interval_sec is not None:
+        updates["SIMULATOR_INTERVAL_SEC"] = str(int(body.interval_sec) if body.interval_sec == int(body.interval_sec) else body.interval_sec)
+    if body.enabled is not None:
+        updates["SIMULATOR_ENABLED"] = "true" if body.enabled else "false"
+    try:
+        data = _patch_configmap_data(updates)
+        _restart_simulator_deploy()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to update ConfigMap: {exc}") from exc
+    interval = float(data.get("SIMULATOR_INTERVAL_SEC") or "30")
+    enabled = (data.get("SIMULATOR_ENABLED") or "true").lower() in {"1", "true", "yes", "on"}
+    return {
+        "interval_sec": interval,
+        "enabled": enabled,
+        "source": "casino-config",
+        "updated": list(updates.keys()),
+        "note": "Simulator restarted to apply settings",
+    }
+
+
 @app.get("/api/v1/sse")
 async def sse():
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)

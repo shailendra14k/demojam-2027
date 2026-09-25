@@ -105,7 +105,8 @@ def _embed_http(token_ids: list[int]) -> np.ndarray | None:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with request.urlopen(req, timeout=5) as resp:
+    # Cold start on tfm-embed (first CUDA load) can exceed a few seconds.
+    with request.urlopen(req, timeout=60) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     rows = body.get("embeddings") or body.get("data")
     if not rows:

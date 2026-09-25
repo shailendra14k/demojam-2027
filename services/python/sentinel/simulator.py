@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from pathlib import Path
 
 from . import db
 from .config import settings
@@ -18,6 +19,8 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger("sentinel.simulator")
+
+_CFG_DIR = Path(os.getenv("SIMULATOR_CONFIG_DIR", "/etc/casino-config"))
 
 PLAYERS = [
     "C10281", "C10402", "C10811", "C10990", "C11012", "C11120",
@@ -35,6 +38,31 @@ NORMAL = [
     ("C11201", "BUY_IN", 100, 600, "Table 09", "CHIPS"),
     ("C11330", "ROULETTE", 50, 400, "Table 04", "CHIPS"),
 ]
+
+
+def _read_file(name: str) -> str | None:
+    path = _CFG_DIR / name
+    try:
+        if path.is_file():
+            return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return None
+
+
+def simulator_interval_sec() -> float:
+    raw = _read_file("SIMULATOR_INTERVAL_SEC") or os.getenv("SIMULATOR_INTERVAL_SEC")
+    try:
+        return max(1.0, float(raw if raw is not None else settings.simulator_interval_sec))
+    except (TypeError, ValueError):
+        return max(1.0, float(settings.simulator_interval_sec))
+
+
+def simulator_enabled() -> bool:
+    raw = (_read_file("SIMULATOR_ENABLED") or os.getenv("SIMULATOR_ENABLED") or "").strip().lower()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    return bool(settings.simulator_enabled)
 
 
 def insert_transaction(player_id: str, txn_type: str, amount: float, location: str, method: str) -> str:
@@ -124,17 +152,30 @@ def run_scenario(name: str) -> dict:
 
 
 def loop() -> None:
-    log.info("Simulator loop interval=%ss", settings.simulator_interval_sec)
+    last_logged: float | None = None
     while True:
         try:
-            if settings.simulator_enabled:
+            interval = simulator_interval_sec()
+            enabled = simulator_enabled()
+            if last_logged != interval:
+                log.info("Simulator loop interval=%ss enabled=%s", interval, enabled)
+                last_logged = interval
+            if enabled:
                 player, txn_type, lo, hi, loc, method = random.choice(NORMAL)
                 amt = round(random.uniform(lo, hi), 2)
                 txn_id = insert_transaction(player, txn_type, amt, loc, method)
                 log.info("sim %s %s %s %s", txn_id, player, txn_type, amt)
+            # Sleep in 1s chunks so ConfigMap / UI changes apply without long waits
+            remaining = interval
+            while remaining > 0:
+                step = min(1.0, remaining)
+                time.sleep(step)
+                remaining -= step
+                if simulator_interval_sec() != interval:
+                    break
         except Exception as exc:  # noqa: BLE001
             log.warning("simulator tick failed: %s", exc)
-        time.sleep(settings.simulator_interval_sec)
+            time.sleep(5)
 
 
 def main() -> None:

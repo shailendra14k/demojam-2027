@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     weight_xgboost: float = 0.20
     weight_kyc: float = 0.15
 
-    simulator_interval_sec: float = 2.5
+    simulator_interval_sec: float = 30.0
     simulator_enabled: bool = True
     # Tail Postgres if CDC is unavailable. OpenShift demo: false (Kafka CDC only).
     direct_poll: bool = False

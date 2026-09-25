@@ -350,13 +350,34 @@ spec:
                 secretKeyRef:
                   name: casino-db
                   key: database-url
+            - name: SIMULATOR_CONFIG_DIR
+              value: /etc/casino-config
             - name: SIMULATOR_INTERVAL_SEC
-              value: "3"
+              valueFrom:
+                configMapKeyRef:
+                  name: casino-config
+                  key: SIMULATOR_INTERVAL_SEC
             - name: SIMULATOR_ENABLED
-              value: "true"
+              valueFrom:
+                configMapKeyRef:
+                  name: casino-config
+                  key: SIMULATOR_ENABLED
+          volumeMounts:
+            - name: casino-config
+              mountPath: /etc/casino-config
+              readOnly: true
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: 200m, memory: 256Mi }
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: casino-config
+          configMap:
+            name: casino-config
+            items:
+              - key: SIMULATOR_INTERVAL_SEC
+                path: SIMULATOR_INTERVAL_SEC
+              - key: SIMULATOR_ENABLED
+                path: SIMULATOR_ENABLED

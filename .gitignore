@@ -24,8 +24,9 @@ dist/
 **/.DS_Store
 .ipynb_checkpoints/
 
-# Local TFM clone (large)
-nvidia-tfm/upstream/
+# NVIDIA TFM checkpoint copy (~55MB) — sync with ../nvidia-tfm/clone-nvidia-tfm.sh
+# Do not commit weights; serve_embeddings.py is tracked separately.
+model/decoder-foundation-model/
 
 # Do NOT ignore .dockerignore — it must be committed so OpenShift/docker
 # builds exclude the same paths for everyone (same role as this file).

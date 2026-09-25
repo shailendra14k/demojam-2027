@@ -17,6 +17,7 @@ INSECURE="${INSECURE:-false}"
 SKIP_OPERATORS=true
 SKIP_CONSOLE=false
 SKIP_BUILDS=false
+DEPLOY_RHOAI=false
 DRY_RUN=false
 ENV_FILE=""
 
@@ -39,13 +40,21 @@ Optional:
   --install-operators  Install AMQ Streams + Streams Console operators via OLM
   --skip-console       Do not deploy Streams Console
   --skip-builds        Reuse existing ImageStream tags
+  --rhoai              Deploy TFM on OpenShift AI (ServingRuntime + InferenceService)
   --dry-run            Print commands only
   -h, --help
 
 Default (./deploy.sh --env ./env --insecure):
   PostgreSQL + AMQ Streams + Streams Console + Debezium + microservice AML pipeline + UI.
   XGBoost scores in sentinel-ml-engine from joblib (no OpenShift AI).
-  TFM_MODE=hashed / AI_MODE=mock on casino-config. Set TFM_MODE=http + TFM_EMBED_URL for GPU.
+  TFM_MODE=hashed / AI_MODE=mock on casino-config.
+
+With --rhoai (OpenShift AI KServe + 1 GPU + NGC):
+  Prerequisite: ../nvidia-tfm/clone-nvidia-tfm.sh  → model/decoder-foundation-model/
+  Creates PVC tfm-checkpoint + loads weights, ngc-secret (NGC_API_KEY),
+  ConfigMap tfm-embed-script from model/serve_embeddings.py,
+  applies manifests/08-openshift-ai/*, sets TFM_MODE=http + AI_MODE=nvidia.
+  See ../nvidia-tfm/OCP-1GPU.md
 EOF
 }
 
@@ -208,6 +217,135 @@ deploy_console() {
   ok "Console URL: https://sentinel-console.${CLUSTER_DOMAIN}"
 }
 
+# OpenShift AI TFM: PVC + NGC secret + script ConfigMap + ServingRuntime + InferenceService.
+# Laptop pre-req: ../nvidia-tfm/clone-nvidia-tfm.sh → model/decoder-foundation-model/ (see OCP-1GPU.md).
+ensure_ngc_secret() {
+  if oc get secret ngc-secret -n "${NAMESPACE}" >/dev/null 2>&1; then
+    ok "Secret ngc-secret exists"
+    return 0
+  fi
+  local key="${NGC_API_KEY:-}"
+  [[ -n "${key}" ]] || die "Secret ngc-secret missing. Set NGC_API_KEY in env (see nvidia-tfm/OCP-1GPU.md) or: oc create secret docker-registry ngc-secret ..."
+  log "Creating ngc-secret from NGC_API_KEY"
+  oc create secret docker-registry ngc-secret \
+    --docker-server=nvcr.io \
+    --docker-username='$oauthtoken' \
+    --docker-password="${key}" \
+    -n "${NAMESPACE}"
+  oc secrets link default ngc-secret --for=pull -n "${NAMESPACE}" || true
+  ok "Secret ngc-secret created"
+}
+
+ensure_tfm_checkpoint_pvc() {
+  local ckpt_dir="${SCRIPT_DIR}/model/decoder-foundation-model"
+  local safetensors="${ckpt_dir}/model-00001-of-00001.safetensors"
+  [[ -d "${ckpt_dir}" ]] || die "Missing ${ckpt_dir}. Run: ../nvidia-tfm/clone-nvidia-tfm.sh (see nvidia-tfm/OCP-1GPU.md)"
+  [[ -f "${safetensors}" ]] || die "Missing ${safetensors}. Run git lfs pull via clone-nvidia-tfm.sh"
+  local sz
+  sz="$(wc -c < "${safetensors}" | tr -d ' ')"
+  [[ "${sz}" -gt 1000000 ]] || die "${safetensors} looks like an LFS pointer (${sz} bytes). Re-run clone-nvidia-tfm.sh"
+
+  if ! oc get pvc tfm-checkpoint -n "${NAMESPACE}" >/dev/null 2>&1; then
+    log "Creating PVC tfm-checkpoint"
+    oc apply -n "${NAMESPACE}" -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tfm-checkpoint
+  namespace: ${NAMESPACE}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+EOF
+  else
+    ok "PVC tfm-checkpoint exists"
+  fi
+
+  log "Loading decoder-foundation-model onto PVC tfm-checkpoint"
+  oc delete pod tfm-ckpt-load -n "${NAMESPACE}" --ignore-not-found || true
+  oc run tfm-ckpt-load -n "${NAMESPACE}" --restart=Never \
+    --image=registry.access.redhat.com/ubi9/ubi-minimal \
+    --overrides="{\"spec\":{\"containers\":[{\"name\":\"load\",\"image\":\"registry.access.redhat.com/ubi9/ubi-minimal\",\"command\":[\"sleep\",\"3600\"],\"volumeMounts\":[{\"name\":\"ckpt\",\"mountPath\":\"/models\"}]}],\"volumes\":[{\"name\":\"ckpt\",\"persistentVolumeClaim\":{\"claimName\":\"tfm-checkpoint\"}}]}}"
+  oc wait -n "${NAMESPACE}" pod/tfm-ckpt-load --for=condition=Ready --timeout=180s
+  oc exec -n "${NAMESPACE}" tfm-ckpt-load -- microdnf install -y tar gzip
+  tar -C "${SCRIPT_DIR}/model" -czf /tmp/decoder-foundation-model.tgz decoder-foundation-model
+  oc cp /tmp/decoder-foundation-model.tgz "${NAMESPACE}/tfm-ckpt-load:/models/decoder-foundation-model.tgz"
+  oc exec -n "${NAMESPACE}" tfm-ckpt-load -- tar -C /models -xzf /models/decoder-foundation-model.tgz
+  oc delete pod tfm-ckpt-load -n "${NAMESPACE}" --ignore-not-found || true
+  rm -f /tmp/decoder-foundation-model.tgz
+  ok "Checkpoint loaded onto PVC"
+}
+
+deploy_rhoai() {
+  if [[ "${DEPLOY_RHOAI}" != true ]]; then
+    return 0
+  fi
+
+  local rhoai_dir="${MANIFESTS}/08-openshift-ai"
+  local script_py="${SCRIPT_DIR}/model/serve_embeddings.py"
+  local embed_url="http://tfm-embed-predictor.${NAMESPACE}.svc:8080/v1/embeddings"
+
+  log "Deploying OpenShift AI TFM ServingRuntime + InferenceService (--rhoai)"
+  [[ -d "${rhoai_dir}" ]] || die "Missing ${rhoai_dir}"
+  [[ -f "${script_py}" ]] || die "Missing ${script_py}"
+
+  if [[ "${DRY_RUN}" == true ]]; then
+    echo "DRY-RUN ensure ngc-secret + PVC tfm-checkpoint from model/decoder-foundation-model"
+    echo "DRY-RUN ConfigMap tfm-embed-script from ${script_py}"
+    echo "DRY-RUN oc apply ${rhoai_dir}/*.yaml (namespace=${NAMESPACE})"
+    echo "DRY-RUN patch casino-config TFM_MODE=http TFM_EMBED_URL=${embed_url} AI_MODE=nvidia"
+    return 0
+  fi
+
+  if ! oc api-resources --api-group=serving.kserve.io 2>/dev/null | grep -q ServingRuntime; then
+    die "OpenShift AI / KServe CRDs not found (ServingRuntime). Enable RHOAI single-model serving first."
+  fi
+
+  ensure_ngc_secret
+  ensure_tfm_checkpoint_pvc
+
+  oc create configmap tfm-embed-script \
+    -n "${NAMESPACE}" \
+    --from-file=serve_embeddings.py="${script_py}" \
+    --dry-run=client -o yaml | oc apply -f -
+  ok "ConfigMap tfm-embed-script"
+
+  if oc get deploy tfm-embed -n "${NAMESPACE}" >/dev/null 2>&1; then
+    log "Deleting legacy deploy/tfm-embed (InferenceService only)"
+    oc delete deploy,svc tfm-embed -n "${NAMESPACE}" --ignore-not-found || true
+  fi
+
+  # Dashboard: HARDWARE_PROFILE_NAME must match Settings → Hardware profiles (e.g. gpu-profile)
+  local hwp_name="${HARDWARE_PROFILE_NAME:-gpu-profile}"
+  local hwp_ns="${HARDWARE_PROFILE_NAMESPACE:-redhat-ods-applications}"
+
+  sed "s/namespace: casino-sentinel/namespace: ${NAMESPACE}/g" \
+    "${rhoai_dir}/servingruntime-casino-tfm-nemo.yaml" | oc apply -f -
+
+  sed -e "s/namespace: casino-sentinel/namespace: ${NAMESPACE}/g" \
+      -e "s/opendatahub.io\/hardware-profile-name: .*/opendatahub.io\/hardware-profile-name: ${hwp_name}/" \
+      -e "s/opendatahub.io\/hardware-profile-namespace: .*/opendatahub.io\/hardware-profile-namespace: ${hwp_ns}/" \
+    "${rhoai_dir}/inferenceservice-tfm-embed.yaml" | oc apply -f -
+  ok "Hardware profile annotations: ${hwp_name} (${hwp_ns})"
+
+  log "Waiting for InferenceService/tfm-embed Ready (NeMo image pull can take several minutes)"
+  oc wait inferenceservice/tfm-embed -n "${NAMESPACE}" --for=condition=Ready --timeout=900s || true
+
+  oc patch configmap casino-config -n "${NAMESPACE}" --type merge -p "{
+    \"data\": {
+      \"TFM_MODE\": \"http\",
+      \"TFM_EMBED_URL\": \"${embed_url}\",
+      \"TFM_CHECKPOINT\": \"\",
+      \"AI_MODE\": \"nvidia\"
+    }
+  }"
+  oc rollout restart deploy/sentinel-ml-engine -n "${NAMESPACE}" || true
+  oc rollout status deploy/sentinel-ml-engine -n "${NAMESPACE}" --timeout=180s || true
+  ok "RHOAI TFM cutover: TFM_EMBED_URL=${embed_url}"
+}
+
 start_build() {
   local name="$1"
   local dir="$2"
@@ -237,6 +375,11 @@ print_summary() {
   echo "XGBoost:          joblib in sentinel-python (sentinel-ml-engine)"
   echo "Pipeline:         normalizer → features → rules+ml → risk → alerts"
   echo "TFM:              TFM_MODE/AI_MODE on casino-config (default hashed/mock). GPU: TFM_MODE=http + TFM_EMBED_URL"
+  if [[ "${DEPLOY_RHOAI}" == true ]]; then
+    echo "RHOAI TFM:        ServingRuntime casino-tfm-nemo + InferenceService tfm-embed"
+    echo "TFM_EMBED_URL:    http://tfm-embed-predictor.${NAMESPACE}.svc:8080/v1/embeddings"
+    oc get servingruntime,inferenceservice -n "${NAMESPACE}" 2>/dev/null || true
+  fi
   echo
   echo "Demo: open the UI → Demo Controls / Start Scenario (structuring / rapid-wire / mixed)"
 }
@@ -266,6 +409,7 @@ while [[ $# -gt 0 ]]; do
     --install-operators)  SKIP_OPERATORS=false; shift ;;
     --skip-console)       SKIP_CONSOLE=true; shift ;;
     --skip-builds)        SKIP_BUILDS=true; shift ;;
+    --rhoai)              DEPLOY_RHOAI=true; shift ;;
     --dry-run)            DRY_RUN=true; shift ;;
     -h|--help)            usage; exit 0 ;;
     *)                    die "Unknown argument: $1" ;;
@@ -328,6 +472,8 @@ log "Waiting for Kafka Connect image build (can take several minutes)"
 wait_cr kafkaconnect sentinel-connect 900 || true
 apply "${MANIFESTS}/04-debezium/postgres-connector.yaml"
 wait_cr kafkaconnector casino-postgres-connector 300 || true
+
+deploy_rhoai
 
 print_summary
 log "Done."
