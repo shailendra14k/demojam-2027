@@ -1,8 +1,9 @@
 # Prerequisites (or use ./deploy.sh --rhoai which does these):
 #   - OpenShift AI single-model serving (KServe) enabled
 #   - PVC tfm-checkpoint with decoder-foundation-model/ (from model/ via deploy.sh)
-#   - Secret ngc-secret (NGC_API_KEY in env) + linked for pull
 #   - ConfigMap tfm-embed-script from model/serve_embeddings.py
+# NeMo image: public Quay mirror of nvcr.io/nvidia/nemo:25.09.01
+#   quay.io/shailendra14k/nemo:25.09.01  (no NGC_API_KEY / ngc-secret required)
 # Laptop: ../nvidia-tfm/clone-nvidia-tfm.sh → model/decoder-foundation-model/
 # Docs: ../nvidia-tfm/OCP-1GPU.md
 #
@@ -36,7 +37,7 @@ spec:
       autoSelect: true
   containers:
     - name: kserve-container
-      image: nvcr.io/nvidia/nemo:25.09.01
+      image: quay.io/shailendra14k/nemo:25.09.01
       imagePullPolicy: IfNotPresent
       command: ["python", "/opt/tfm/serve_embeddings.py"]
       env:
@@ -70,5 +71,3 @@ spec:
     - name: script
       configMap:
         name: tfm-embed-script
-  imagePullSecrets:
-    - name: ngc-secret

@@ -14,6 +14,7 @@ import {
   YAxis,
 } from 'recharts'
 import { api } from '../api'
+import { DetectionBadgeFromEvent } from '../components/DetectionBadge'
 
 const SEVERITY_COLORS: Record<string, string> = {
   CRITICAL: '#f43f5e',
@@ -382,7 +383,7 @@ export default function Dashboard() {
           <div className="feed-list">
             {(elevated.length ? elevated : events).slice(0, 6).map((e, i) => (
               <div key={e.event?.event_id || i} className="feed-row" style={{ animationDelay: `${i * 60}ms` }}>
-                <span className={`badge ${e.risk?.risk_level}`}>{e.risk?.risk_level || '—'}</span>
+                <DetectionBadgeFromEvent row={e} />
                 <span className="mono muted">{String(e.event?.timestamp || '').slice(11, 19)}</span>
                 <Link className="mono" to={`/player/${e.event?.player_id || ''}`}>
                   {String(e.event?.player_id || '—').slice(0, 8)}

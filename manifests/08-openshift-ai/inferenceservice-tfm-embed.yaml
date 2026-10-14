@@ -31,8 +31,7 @@ spec:
   predictor:
     minReplicas: 1
     maxReplicas: 1
-    imagePullSecrets:
-      - name: ngc-secret
+    # NeMo image is on public Quay — no ngc-secret / NGC_API_KEY required.
     model:
       modelFormat:
         name: casino-tfm

@@ -75,16 +75,16 @@ def score_anomaly(
     features: PlayerFeatures,
     profile: PlayerProfile | None,
 ) -> tuple[int, list[dict]]:
+    """Tabular anomaly proxy via XGBoost (Isolation Forest removed)."""
     model = _get_model()
-    if model.iforest is None and model.model is None:
-        return _heuristic(event, features, profile)
+    if model.model is None:
+        try:
+            model.load()
+        except FileNotFoundError:
+            return _heuristic(event, features, profile)
     out = model.predict(_to_flat(event, features, profile))
-    if "iforest_score" in out:
-        score = int(max(1, min(99, round(float(out["iforest_score"]) * 100))))
-        factors = [{"feature": "isolation_forest", "detail": f"score={out['iforest_score']:.3f}", "model": "iforest"}]
-    else:
-        score = int(max(1, min(99, round(float(out["score"]) * 100))))
-        factors = [{"feature": "xgboost_proxy", "detail": "no iforest artifact", "model": "xgboost"}]
+    score = int(max(1, min(99, round(float(out["score"]) * 100))))
+    factors = [{"feature": "xgboost", "detail": f"score={out['score']:.3f}", "model": "xgboost"}]
     if features.just_below_10k_count_24h >= 2:
         factors.append({"feature": "just_below_10k_count_24h", "detail": str(features.just_below_10k_count_24h)})
     ratio = features.wager_to_buyin_ratio

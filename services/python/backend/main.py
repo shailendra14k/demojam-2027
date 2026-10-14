@@ -129,6 +129,7 @@ def _iso(value: Any) -> str | None:
 
 
 def _row_to_alert(row: Any) -> dict[str, Any]:
+    from casino_common.alert_labels import alert_display_label
     """Map A's aml.alerts row → B API alert shape (score 0..1, rule_hits, …)."""
     data = dict(row) if not isinstance(row, dict) else dict(row)
     risk_raw = data.get("risk_score")
@@ -166,6 +167,13 @@ def _row_to_alert(row: Any) -> dict[str, Any]:
             triggering = json.loads(triggering)
         except json.JSONDecodeError:
             triggering = [triggering]
+    display_label = alert_display_label(
+        rule_hits=rule_hits,
+        matched_rules=matched,
+        risk_level=str(data.get("priority") or data.get("risk_level") or "MEDIUM"),
+        title=data.get("title") or data.get("alert_type"),
+        summary=data.get("explanation") or data.get("summary"),
+    )
     return {
         "alert_id": str(data["alert_id"]) if data.get("alert_id") is not None else None,
         "player_id": str(data["player_id"]) if data.get("player_id") is not None else None,
@@ -175,7 +183,8 @@ def _row_to_alert(row: Any) -> dict[str, Any]:
         "correlation_id": str(triggering[1]) if len(triggering) > 1 else data.get("correlation_id"),
         "risk_level": data.get("priority") or data.get("risk_level") or "MEDIUM",
         "status": data.get("status") or "OPEN",
-        "title": data.get("alert_type") or data.get("title") or "AML",
+        "title": display_label,
+        "display_label": display_label,
         "summary": data.get("explanation") or data.get("summary") or "",
         "score": score,
         "rule_hits": rule_hits,
@@ -502,6 +511,15 @@ def process_event(event: dict[str, Any]) -> dict[str, Any]:
         or assessment.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL)
         or (assessment.rule_hits and assessment.final_score >= 0.40)
     ):
+        from casino_common.alert_labels import alert_display_label
+
+        display_label = alert_display_label(
+            rule_hits=[h.model_dump(mode="json") for h in assessment.rule_hits],
+            risk_level=assessment.risk_level.value,
+            summary="; ".join(assessment.explanations)[:2000],
+            ml_score=float(ml.score) if ml else None,
+            behavioral_score=float(beh.score) if beh else None,
+        )
         alert = {
             "alert_id": str(uuid4()),
             "player_id": player_id,
@@ -512,7 +530,8 @@ def process_event(event: dict[str, Any]) -> dict[str, Any]:
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "risk_level": assessment.risk_level.value,
             "status": AlertStatus.OPEN.value,
-            "title": f"AML {assessment.risk_level.value}",
+            "title": display_label,
+            "display_label": display_label,
             "summary": "; ".join(assessment.explanations)[:2000],
             "score": assessment.final_score,
             "rule_hits": [h.model_dump(mode="json") for h in assessment.rule_hits],

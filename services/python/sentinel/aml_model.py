@@ -32,7 +32,7 @@ def _default_model_dir() -> Path:
         here.parent / "model" / "artifacts",
         here.parents[2] / "model" / "artifacts",
     ):
-        if (cand / "aml_xgb.joblib").exists() or (cand / "aml_xgboost.joblib").exists():
+        if (cand / "aml_xgb.joblib").exists():
             return cand
     return here.parent / "model" / "artifacts"
 
@@ -43,21 +43,13 @@ class AMLModel:
     def __init__(self, model_dir: Optional[Path] = None) -> None:
         self.model_dir = Path(model_dir or _default_model_dir())
         self.model = None
-        self.iforest = None
         self.feature_names = list(FEATURE_COLUMNS)
         self.version = "2.0.0"
         self.name = "casino-aml-xgb"
         self.infer_url = os.getenv("XGB_INFER_URL", "").strip()
 
-    def _xgb_candidates(self) -> list[Path]:
-        return [
-            self.model_dir / "aml_xgb.joblib",
-            self.model_dir / "aml_xgboost.joblib",
-            self.model_dir / "aml_xgb.pkl",
-        ]
-
-    def _iforest_path(self) -> Path:
-        return self.model_dir / "aml_iforest.joblib"
+    def _xgb_path(self) -> Path:
+        return self.model_dir / "aml_xgb.joblib"
 
     def _meta_path(self) -> Path:
         for name in ("meta.json", "aml_xgb_meta.json"):
@@ -67,10 +59,10 @@ class AMLModel:
         return self.model_dir / "meta.json"
 
     def load(self) -> None:
-        path = next((p for p in self._xgb_candidates() if p.exists()), None)
-        if path is None:
+        path = self._xgb_path()
+        if not path.exists():
             raise FileNotFoundError(
-                f"No XGBoost artifact in {self.model_dir}. "
+                f"No XGBoost artifact at {path}. "
                 "Run: cd model && python train_models.py"
             )
         raw = joblib.load(path)
@@ -81,10 +73,6 @@ class AMLModel:
                 self.feature_names = list(names)
         else:
             self.model = raw
-
-        ifp = self._iforest_path()
-        if ifp.exists():
-            self.iforest = joblib.load(ifp)
 
         meta_path = self._meta_path()
         if meta_path.exists():
@@ -169,7 +157,7 @@ class AMLModel:
                 }
             )
         contrib.sort(key=lambda c: c["contribution"], reverse=True)
-        out: dict[str, Any] = {
+        return {
             "score": proba,
             "label": label,
             "model_name": self.name,
@@ -178,8 +166,3 @@ class AMLModel:
             "shap_top": contrib[:5],
             "source": "local",
         }
-        if self.iforest is not None:
-            # decision_function: higher = more normal; map to 0..1 anomaly-ish score
-            raw = float(self.iforest.decision_function(x)[0])
-            out["iforest_score"] = float(1.0 / (1.0 + np.exp(raw)))
-        return out

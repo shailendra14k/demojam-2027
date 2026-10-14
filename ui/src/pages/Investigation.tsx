@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
+import { DetectionBadgeFromAlert } from '../components/DetectionBadge'
+import { alertDisplayLabel } from '../lib/alertLabels'
 
 function when(v: unknown) {
   if (!v) return '—'
@@ -87,7 +89,7 @@ export default function Investigation() {
           <table>
             <thead>
               <tr>
-                <th>Level</th>
+                <th>Detection</th>
                 <th>Status</th>
                 <th>Score</th>
                 <th>Player</th>
@@ -113,7 +115,7 @@ export default function Investigation() {
                   }}
                 >
                   <td>
-                    <span className={`badge ${a.risk_level}`}>{a.risk_level}</span>
+                    <DetectionBadgeFromAlert alert={a} />
                   </td>
                   <td>{a.status}</td>
                   <td className="mono">{a.score?.toFixed?.(2)}</td>
@@ -133,7 +135,7 @@ export default function Investigation() {
           {selected && (
             <div className="stack">
               <div>
-                <strong>{selected.title}</strong>
+                <strong>{alertDisplayLabel(selected)}</strong>
               </div>
               <div className="mono muted">{selected.alert_id}</div>
               <div>

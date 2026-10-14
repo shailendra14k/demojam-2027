@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from casino_common.config import database_url  # noqa: E402
 from casino_common.kafka_utils import JsonConsumer, JsonProducer, run_loop  # noqa: E402
 from casino_common.logging_config import set_context, setup_logging  # noqa: E402
+from casino_common.alert_labels import alert_display_label  # noqa: E402
 from casino_common.models import Alert, AlertStatus, RiskLevel  # noqa: E402
 
 log = setup_logging("alert-service", os.getenv("LOG_LEVEL", "INFO"))
@@ -150,7 +151,11 @@ def handle(key, value):
 
     now = datetime.now(timezone.utc)
     rules = value.get("rule_hits") or []
-    title = f"AML {level}: " + (", ".join(r.get("rule_id", "?") for r in rules) or "elevated risk")
+    title = alert_display_label(
+        rule_hits=rules,
+        risk_level=level,
+        summary="; ".join(value.get("explanations") or [])[:500] or None,
+    )
     alert = Alert(
         alert_id=_alert_id_for(str(event_id) if event_id else None),
         player_id=value["player_id"],

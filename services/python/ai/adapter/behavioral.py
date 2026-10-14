@@ -1,4 +1,8 @@
-"""Behavioral model adapter: mock | cpu | nvidia."""
+"""Behavioral model adapter: mock | nvidia (TFM).
+
+``AI_MODE=cpu`` is accepted for backward compatibility and maps to mock —
+Isolation Forest was removed; use ``AI_MODE=nvidia`` + TFM for behavioral scoring.
+"""
 
 from __future__ import annotations
 
@@ -6,16 +10,11 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from casino_common.models import BehavioralScore
 
 log = logging.getLogger("behavioral-adapter")
-
-_DEFAULT_IFOREST = (
-    Path(__file__).resolve().parents[2] / "ml" / "models" / "aml_iforest.joblib"
-)
 
 
 class BehavioralModelAdapter(ABC):
@@ -62,90 +61,21 @@ class MockBehavioralAdapter(BehavioralModelAdapter):
         )
 
 
-class CpuBehavioralAdapter(BehavioralModelAdapter):
-    """CPU IsolationForest fit on synthetic *normal* casino feature vectors (not N(0,1) noise).
-
-    Prefers a baked ``aml_iforest.joblib`` (joblib, demojam-style) when present;
-    otherwise fits in-memory on synthetic normals.
-    """
+class CpuBehavioralAdapter(MockBehavioralAdapter):
+    """Deprecated alias: Isolation Forest removed — same as mock. Prefer ``AI_MODE=nvidia``."""
 
     name = "cpu"
 
-    def __init__(self, model_path: Path | None = None) -> None:
-        self._model = None
-        self._model_path = Path(
-            model_path or os.getenv("IFOREST_MODEL_PATH", str(_DEFAULT_IFOREST))
-        )
-
-    def _ensure(self):
-        if self._model is not None:
-            return self._model
-
-        import joblib
-        from sklearn.ensemble import IsolationForest
-        import numpy as np
-
-        if self._model_path.exists():
-            self._model = joblib.load(self._model_path)
-            log.info("loaded IsolationForest from %s", self._model_path)
-            return self._model
-
-        rng = np.random.default_rng(42)
-        n = 800
-        # Columns: 5m_sum, 1h_sum, dep24, wd24, wager24, avg30d, shared_dev, amount/1k
-        X = np.column_stack(
-            [
-                rng.uniform(0, 2000, n),
-                rng.uniform(0, 8000, n),
-                rng.uniform(200, 5000, n),
-                rng.uniform(0, 3000, n),
-                rng.uniform(100, 6000, n),
-                rng.uniform(50, 800, n),
-                np.ones(n),
-                rng.uniform(0.05, 5.0, n),
-            ]
-        )
-        self._model = IsolationForest(n_estimators=80, contamination=0.08, random_state=42)
-        self._model.fit(X)
-        try:
-            self._model_path.parent.mkdir(parents=True, exist_ok=True)
-            joblib.dump(self._model, self._model_path)
-            log.info("fitted IsolationForest and saved %s", self._model_path)
-        except OSError as exc:
-            log.debug("could not persist IsolationForest (%s); keeping in-memory", exc)
-        return self._model
-
     def score(self, player_id: str, event: dict[str, Any], features: dict[str, float],
               event_id: str, correlation_id: str) -> BehavioralScore:
-        import numpy as np
-
-        model = self._ensure()
-        vec = np.array([[
-            features.get("w5m_tx_sum", 0),
-            features.get("w1h_tx_sum", 0),
-            features.get("w24h_deposit_sum", 0),
-            features.get("w24h_withdrawal_sum", 0),
-            features.get("w24h_wager_sum", 0),
-            features.get("w30d_avg_tx_amount", 0),
-            features.get("static_shared_device_count", 0),
-            float(event.get("amount") or 0) / 1000.0,
-        ]])
-        raw = float(model.decision_function(vec)[0])
-        score = float(min(1.0, max(0.0, 0.5 - raw)))
-        flags = ["isolation_forest_anomaly"] if score >= 0.6 else []
-        return BehavioralScore(
-            event_id=event_id,
-            player_id=player_id,
-            correlation_id=correlation_id,
-            timestamp=datetime.now(timezone.utc),
-            adapter=self.name,
-            score=score,
-            anomaly_flags=flags,
-            explanation={
-                "method": "sklearn IsolationForest on synthetic normal casino features",
-                "decision_function": raw,
-            },
+        log.warning(
+            "AI_MODE=cpu is deprecated (Isolation Forest removed); using mock. "
+            "Set AI_MODE=nvidia + TFM_MODE=http for NVIDIA TFM."
         )
+        out = super().score(player_id, event, features, event_id, correlation_id)
+        out.adapter = "cpu-deprecated-mock"
+        out.explanation["note"] = "Isolation Forest removed; use AI_MODE=nvidia"
+        return out
 
 
 class NvidiaBehavioralAdapter(BehavioralModelAdapter):

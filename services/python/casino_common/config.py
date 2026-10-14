@@ -18,7 +18,7 @@ def settings() -> dict:
             "KAFKA_BOOTSTRAP_SERVERS", "sentinel-kafka-kafka-bootstrap:9092"
         ),
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
-        "ai_mode": os.getenv("AI_MODE", "mock"),  # mock|cpu|nvidia
+        "ai_mode": os.getenv("AI_MODE", "mock"),  # mock|nvidia (cpu deprecated→mock)
         "risk_weight_rules": float(os.getenv("RISK_WEIGHT_RULES", "0.45")),
         "risk_weight_ml": float(os.getenv("RISK_WEIGHT_ML", "0.35")),
         "risk_weight_behavioral": float(os.getenv("RISK_WEIGHT_BEHAVIORAL", "0.20")),

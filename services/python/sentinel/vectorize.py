@@ -1,4 +1,4 @@
-"""Shared numeric feature vector for CPU models (XGBoost + Isolation Forest)."""
+"""Shared numeric feature vector for CPU tabular models (XGBoost)."""
 
 from __future__ import annotations
 

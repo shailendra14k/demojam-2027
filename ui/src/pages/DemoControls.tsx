@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { DetectionBadgeFromAlert } from '../components/DetectionBadge'
+import { eventDisplayLabel } from '../lib/alertLabels'
 
 const LABELS: Record<string, string> = {
   normal: 'Generate Normal Transaction',
@@ -152,11 +154,24 @@ export default function DemoControls() {
                 Alerts: {result.alerts_generated ?? (result.alerts || []).length}
               </p>
               <p>
-                Sample risk:{' '}
-                <span className={`badge ${result.sample_risk?.risk_level}`}>
-                  {result.sample_risk?.risk_level || '—'}
-                </span>{' '}
+                Sample detection:{' '}
+                {(result.alerts || [])[0] ? (
+                  <DetectionBadgeFromAlert alert={(result.alerts || [])[0]} />
+                ) : (
+                  <span
+                    className={`badge detection ${result.sample_risk?.risk_level || ''}`}
+                    title={`Severity: ${result.sample_risk?.risk_level || '—'}`}
+                  >
+                    {eventDisplayLabel({
+                      risk: result.sample_risk,
+                      rules: result.sample_rules,
+                    })}
+                  </span>
+                )}{' '}
                 score {result.sample_risk?.final_score ?? '—'}
+                {result.sample_risk?.risk_level ? (
+                  <span className="mono muted"> · {result.sample_risk.risk_level}</span>
+                ) : null}
               </p>
               <pre
                 className="mono"

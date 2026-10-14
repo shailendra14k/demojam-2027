@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
+import { DetectionBadgeFromAlert } from '../components/DetectionBadge'
 
 function money(v: unknown) {
   if (v == null || v === '') return '—'
@@ -218,9 +219,9 @@ export default function Player360() {
             <table>
               <thead>
                 <tr>
-                  <th>Level</th>
+                  <th>Detection</th>
                   <th>Status</th>
-                  <th>Title</th>
+                  <th>Severity</th>
                   <th>Score</th>
                 </tr>
               </thead>
@@ -228,11 +229,13 @@ export default function Player360() {
                 {(data.alerts || []).map((a: any) => (
                   <tr key={a.alert_id}>
                     <td>
-                      <span className={`badge ${a.risk_level}`}>{a.risk_level}</span>
+                      <Link to="/investigate">
+                        <DetectionBadgeFromAlert alert={a} />
+                      </Link>
                     </td>
                     <td>{a.status}</td>
                     <td>
-                      <Link to="/investigate">{a.title}</Link>
+                      <span className={`badge ${a.risk_level}`}>{a.risk_level}</span>
                     </td>
                     <td className="mono">{a.score?.toFixed?.(2) ?? a.score}</td>
                   </tr>

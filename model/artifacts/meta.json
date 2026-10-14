@@ -33,7 +33,7 @@
   "model": "XGBClassifier",
   "tree_method": "hist",
   "device": "cpu",
-  "source": "synthetic",
+  "source": "/Users/shsingh/Documents/Software/TSM/demoJam/demojam-2027/model/artifacts/aml_train_synthetic.csv",
   "xgboost_roc_auc": 0.941,
   "xgboost_pr_auc": 0.9169,
   "n_train": 3200,
@@ -42,36 +42,37 @@
   "top_features": [
     [
       "static_watchlist_hit",
-      0.2523091733455658
+      0.25231003761291504
     ],
     [
       "static_shared_device_count",
-      0.22403867542743683
+      0.22403942048549652
     ],
     [
       "w24h_cage_visits",
-      0.14714258909225464
+      0.14714306592941284
     ],
     [
       "w24h_cash_out_sum",
-      0.11542931199073792
+      0.11542968451976776
     ],
     [
       "w24h_wager_sum",
-      0.05029575526714325
+      0.050295956432819366
     ],
     [
       "w5m_deposit_sum",
-      0.04145527258515358
+      0.04145536571741104
     ],
     [
       "w24h_tx_count",
-      0.037743642926216125
+      0.03774379566311836
     ],
     [
       "w24h_deposit_sum",
-      0.03692261874675751
+      0.03692278265953064
     ]
   ],
-  "scoring_module": "sentinel.aml_model"
+  "scoring_module": "sentinel.aml_model",
+  "behavioral": "nvidia-tfm (not trained here)"
 }

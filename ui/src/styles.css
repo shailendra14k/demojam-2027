@@ -381,7 +381,7 @@ body {
 .feed-list { display: grid; gap: 0.35rem; }
 .feed-row {
   display: grid;
-  grid-template-columns: auto auto auto auto 1fr;
+  grid-template-columns: minmax(10rem, 1.4fr) auto auto auto 1fr;
   gap: 0.65rem;
   align-items: center;
   padding: 0.45rem 0.35rem;
@@ -480,6 +480,14 @@ tr:hover td { background: rgba(45, 212, 191, 0.04); }
 .badge.LOW { color: var(--ok); }
 .badge.MEDIUM { color: var(--warn); }
 .badge.HIGH, .badge.CRITICAL { color: var(--danger); }
+.badge.detection {
+  font-family: var(--sans, inherit);
+  font-size: 0.72rem;
+  line-height: 1.25;
+  max-width: 16rem;
+  white-space: normal;
+  text-align: left;
+}
 
 .btn {
   appearance: none;

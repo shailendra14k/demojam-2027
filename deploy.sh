@@ -49,15 +49,16 @@ Default (./deploy.sh --env ./.env --insecure):
   XGBoost scores in sentinel-ml-engine from joblib (no OpenShift AI).
   TFM_MODE=hashed / AI_MODE=mock on casino-config.
 
-With --rhoai (OpenShift AI KServe + 1 GPU + NGC):
+With --rhoai (OpenShift AI KServe + 1 GPU):
   Prerequisite: ../nvidia-tfm/clone-nvidia-tfm.sh  → model/decoder-foundation-model/
   Waits for DSC kserve=Managed + ServingRuntime/InferenceService CRDs (RHOAI_WAIT_TIMEOUT).
   Auto-enables KServe on DSC if needed (disable with RHOAI_ENABLE_KSERVE=false).
   First frees the single GPU (stops other InferenceServices e.g. llama-32-3b-instruct,
   scales down other nvidia.com/gpu Deployments). Set SKIP_FREE_GPU=true to skip.
-  Creates PVC tfm-checkpoint + loads weights, ngc-secret (NGC_API_KEY),
+  Creates PVC tfm-checkpoint + loads weights,
   ConfigMap tfm-embed-script from model/serve_embeddings.py,
-  applies manifests/08-openshift-ai/*, sets TFM_MODE=http + AI_MODE=nvidia.
+  applies manifests/08-openshift-ai/* (NeMo from quay.io/shailendra14k/nemo:25.09.01 —
+  no NGC_API_KEY), sets TFM_MODE=http + AI_MODE=nvidia.
   See ../nvidia-tfm/OCP-1GPU.md
 EOF
 }
@@ -221,7 +222,7 @@ deploy_console() {
   ok "Console URL: https://sentinel-console.${CLUSTER_DOMAIN}"
 }
 
-# OpenShift AI TFM: PVC + NGC secret + script ConfigMap + ServingRuntime + InferenceService.
+# OpenShift AI TFM: PVC + Quay NeMo ServingRuntime + InferenceService (no NGC key).
 # Laptop pre-req: ../nvidia-tfm/clone-nvidia-tfm.sh → model/decoder-foundation-model/ (see OCP-1GPU.md).
 
 # Fresh 1-GPU labs often ship with llama-32-3b-instruct (or similar) already on the GPU.
@@ -314,13 +315,18 @@ free_single_gpu() {
 }
 
 ensure_ngc_secret() {
+  # Optional / legacy: NeMo runtime image is quay.io/shailendra14k/nemo:25.09.01 (public).
+  # NGC pull secret is not required for the demo. Kept for optional nvcr.io pulls.
   if oc get secret ngc-secret -n "${NAMESPACE}" >/dev/null 2>&1; then
-    ok "Secret ngc-secret exists"
+    ok "Secret ngc-secret exists (unused by Quay NeMo mirror)"
     return 0
   fi
   local key="${NGC_API_KEY:-}"
-  [[ -n "${key}" ]] || die "Secret ngc-secret missing. Set NGC_API_KEY in env (see nvidia-tfm/OCP-1GPU.md) or: oc create secret docker-registry ngc-secret ..."
-  log "Creating ngc-secret from NGC_API_KEY"
+  if [[ -z "${key}" ]]; then
+    ok "Skipping ngc-secret (NeMo image is on Quay; NGC_API_KEY not required)"
+    return 0
+  fi
+  log "Creating optional ngc-secret from NGC_API_KEY (legacy nvcr.io pulls)"
   oc create secret docker-registry ngc-secret \
     --docker-server=nvcr.io \
     --docker-username='$oauthtoken' \
@@ -462,10 +468,11 @@ deploy_rhoai() {
   if [[ "${DRY_RUN}" == true ]]; then
     echo "DRY-RUN ensure_rhoai_kserve (DSC kserve=Managed + wait for CRDs)"
     echo "DRY-RUN free_single_gpu (stop llama / other GPU InferenceServices + scale GPU deploys)"
-    echo "DRY-RUN ensure ngc-secret + PVC tfm-checkpoint from model/decoder-foundation-model"
+    echo "DRY-RUN PVC tfm-checkpoint from model/decoder-foundation-model (NeMo via Quay; no NGC key)"
     echo "DRY-RUN ConfigMap tfm-embed-script from ${script_py}"
     echo "DRY-RUN oc apply ${rhoai_dir}/*.yaml (namespace=${NAMESPACE})"
     echo "DRY-RUN patch casino-config TFM_MODE=http TFM_EMBED_URL=${embed_url} AI_MODE=nvidia"
+    echo "DRY-RUN rollout restart deploy/sentinel-ml-engine deploy/sentinel-api"
     return 0
   fi
 
@@ -509,9 +516,12 @@ deploy_rhoai() {
       \"AI_MODE\": \"nvidia\"
     }
   }"
-  oc rollout restart deploy/sentinel-ml-engine -n "${NAMESPACE}" || true
+  # ConfigMap env is only read at process start — restart consumers of TFM_* / AI_MODE.
+  log "Restarting sentinel-ml-engine + sentinel-api to pick up TFM_MODE=http / AI_MODE=nvidia"
+  oc rollout restart deploy/sentinel-ml-engine deploy/sentinel-api -n "${NAMESPACE}" || true
   oc rollout status deploy/sentinel-ml-engine -n "${NAMESPACE}" --timeout=180s || true
-  ok "RHOAI TFM cutover: TFM_EMBED_URL=${embed_url}"
+  oc rollout status deploy/sentinel-api -n "${NAMESPACE}" --timeout=180s || true
+  ok "RHOAI TFM cutover: TFM_EMBED_URL=${embed_url} (ml-engine + api restarted)"
 }
 
 start_build() {

@@ -1,4 +1,4 @@
-"""Train AML models offline (B feature schema + A training tooling).
+"""Train AML XGBoost offline (B feature schema).
 
   cd model
   python3 -m venv .venv && source .venv/bin/activate
@@ -6,8 +6,10 @@
   python train_models.py
   python train_models.py --csv /path/to/aml_train.csv
 
-Writes joblib into ``model/artifacts/``. Scoring on OpenShift uses
+Writes ``model/artifacts/aml_xgb.joblib`` (+ meta.json). Scoring on OpenShift uses
 ``sentinel.aml_model`` (load/predict only) — this file is NOT imported at runtime.
+
+Behavioral / sequence scoring uses NVIDIA TFM (not Isolation Forest).
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.ensemble import IsolationForest
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
@@ -195,24 +196,9 @@ def _fit_and_write(X: np.ndarray, y: np.ndarray, source: str) -> None:
     gain = clf.feature_importances_
     top = sorted(zip(FEATURE_COLUMNS, gain.tolist()), key=lambda t: t[1], reverse=True)[:8]
 
-    X_norm = X_train[y_train == 0]
-    if len(X_norm) < 10:
-        X_norm = X_train
-    iforest = IsolationForest(
-        n_estimators=200,
-        contamination=0.08,
-        max_samples=min(2048, max(2, len(X_norm))),
-        random_state=42,
-        n_jobs=2,
-    )
-    iforest.fit(X_norm)
-
     # Payload includes feature_names so scoring can validate schema.
     payload = {"model": clf, "feature_names": FEATURE_COLUMNS, "kind": "xgboost"}
     joblib.dump(payload, ARTIFACTS / "aml_xgb.joblib")
-    # Alias for older docs / copies
-    joblib.dump(payload, ARTIFACTS / "aml_xgboost.joblib")
-    joblib.dump(iforest, ARTIFACTS / "aml_iforest.joblib")
 
     meta = {
         "version": "2.0.0",
@@ -228,16 +214,16 @@ def _fit_and_write(X: np.ndarray, y: np.ndarray, source: str) -> None:
         "positive_rate": round(float(y.mean()), 4),
         "top_features": top,
         "scoring_module": "sentinel.aml_model",
+        "behavioral": "nvidia-tfm (not trained here)",
     }
     (ARTIFACTS / "meta.json").write_text(json.dumps(meta, indent=2))
     print(f"Wrote {ARTIFACTS / 'aml_xgb.joblib'}")
-    print(f"Wrote {ARTIFACTS / 'aml_iforest.joblib'}")
     print(f"Wrote {ARTIFACTS / 'meta.json'}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Train Casino Sentinel XGBoost + Isolation Forest (offline)"
+        description="Train Casino Sentinel XGBoost (offline; TFM is separate)"
     )
     parser.add_argument(
         "--csv",

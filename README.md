@@ -49,20 +49,20 @@ With `./deploy.sh --rhoai`, `sentinel-ml-engine` tokenizes on CPU and calls the 
 | -------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | **Rules**            | Deterministic compliance (CTR, structuring, …) | `sentinel-aml-rules`                                                                        |
 | **XGBoost**          | Supervised AML classifier                      | `model/artifacts/*.joblib` via `sentinel.aml_model` in `sentinel-ml-engine` (CPU)           |
-| **Isolation Forest** | Unsupervised anomaly                           | Same joblib artifacts; blended into ML / behavioral path                                    |
+| **NVIDIA TFM** | Behavioral sequence embeddings | `AI_MODE=nvidia` + `TFM_MODE=http` (GPU); Isolation Forest removed |
 | **NVIDIA TFM**       | 512-d transaction embeddings                   | Default `TFM_MODE=hashed`; GPU: OpenShift AI InferenceService + `model/serve_embeddings.py` |
 
 
-Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model) — clone/sync with `../nvidia-tfm/clone-nvidia-tfm.sh`. See [`../nvidia-tfm/OCP-1GPU.md`](../nvidia-tfm/OCP-1GPU.md).
+Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model) — clone/sync with `../nvidia-tfm/clone-nvidia-tfm.sh`. See `[../nvidia-tfm/OCP-1GPU.md](../nvidia-tfm/OCP-1GPU.md)`.
 
-**Read this first for a plain-language walkthrough:** [`../nvidia-tfm/TFM.md`](../nvidia-tfm/TFM.md) (what embeddings are, how TFM fits the AML score, and what this repo wired up).
+**Read this first for a plain-language walkthrough:** `[../nvidia-tfm/TFM.md](../nvidia-tfm/TFM.md)` (what embeddings are, how TFM fits the AML score, and what this repo wired up).
 
 
-| Env                       | Use                                    |
-| ------------------------- | -------------------------------------- |
-| `TFM_MODE=hashed`         | Default CPU stand-in embedding         |
-| `TFM_MODE=http`           | GPU InferenceService (`TFM_EMBED_URL`) |
-| `AI_MODE=mock|cpu|nvidia` | Behavioral adapter mode (ml-engine)    |
+| Env               | Use                                    |
+| ----------------- | -------------------------------------- |
+| `TFM_MODE=hashed` | Default CPU stand-in embedding         |
+| `TFM_MODE=http`   | GPU InferenceService (`TFM_EMBED_URL`) |
+| `AI_MODE=mock     | cpu                                    |
 
 
 
@@ -74,7 +74,7 @@ cd demojam-2027
 cp env.example .env         # set OCP_API and OCP_TOKEN; do not commit .env
 # Optional: retrain before image build
 #   cd model && python train_models.py && cd ..
-chmod +x deploy.sh destroy.sh demo.sh smoke-test.sh status.sh
+chmod +x deploy.sh destroy.sh demo.sh
 ./deploy.sh --env ./.env --insecure
 # If AMQ Streams / Console operators are not on the cluster yet:
 # ./deploy.sh --env ./.env --insecure --install-operators
@@ -95,20 +95,22 @@ brew install git-lfs && git lfs install   # if needed
 # New NVIDIA release later? Re-run clone script (Step 1b in OCP-1GPU.md), then --rhoai again.
 ```
 
-Cluster needs: GPU Operator, OpenShift AI single-model serving (KServe), NGC key.
+Cluster needs: GPU Operator, OpenShift AI single-model serving (KServe).  
+**NGC / `NGC_API_KEY` is not required** — the TFM ServingRuntime uses the public Quay mirror  
+`quay.io/shailendra14k/nemo:25.09.01` (same content as `nvcr.io/nvidia/nemo:25.09.01`).
 
 ```bash
 cd demojam-2027
-# .env must include NGC_API_KEY=nvapi-...  (creates ngc-secret)
+# .env: OCP_API + OCP_TOKEN only (NGC_API_KEY optional / unused for NeMo pull)
 ./deploy.sh --env ./.env --insecure --rhoai --install-operators
 ```
 
-`--rhoai` first checks OpenShift AI (DSC `kserve=Managed`, waits for ServingRuntime/InferenceService CRDs), frees the single GPU (stops other InferenceServices such as `llama-32-3b-instruct`, scales down other GPU Deployments), then creates PVC `tfm-checkpoint`, loads the checkpoint, mounts `model/serve_embeddings.py`, applies `manifests/08-openshift-ai/*`, and sets `TFM_MODE=http` / `AI_MODE=nvidia` on `casino-config`. Set `SKIP_FREE_GPU=true` in `.env` to leave other GPU models running.
+`--rhoai` first checks OpenShift AI (DSC `kserve=Managed`, waits for ServingRuntime/InferenceService CRDs), frees the single GPU (stops other InferenceServices such as `llama-32-3b-instruct`, scales down other GPU Deployments), then creates PVC `tfm-checkpoint`, loads the checkpoint, mounts `model/serve_embeddings.py`, applies `manifests/08-openshift-ai/*` (Quay NeMo image), and sets `TFM_MODE=http` / `AI_MODE=nvidia` on `casino-config`. Set `SKIP_FREE_GPU=true` in `.env` to leave other GPU models running.
 
 
 | Path                              | Role                                                  |
 | --------------------------------- | ----------------------------------------------------- |
-| `model/artifacts/*.joblib`        | XGBoost / IsolationForest (CPU, in `sentinel-python`) |
+| `model/artifacts/aml_xgb.joblib`  | XGBoost (CPU, in `sentinel-python`); TFM is separate |
 | `model/decoder-foundation-model/` | NVIDIA TFM weights (PVC; not baked into python image) |
 | `model/serve_embeddings.py`       | Embedding HTTP server for InferenceService            |
 
@@ -147,7 +149,7 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 | ----------------------------------------- | --------------------------------------------------------------- |
 | `deploy.sh`                               | Install                                                         |
 | `destroy.sh`                              | Tear down                                                       |
-| `env.example`                             | Copy to `.env` (`OCP_API`, `OCP_TOKEN`, optional `NGC_API_KEY`) |
+| `env.example`                             | Copy to `.env` (`OCP_API`, `OCP_TOKEN`; `NGC_API_KEY` not required — NeMo on Quay) |
 | `demo.sh` / `smoke-test.sh` / `status.sh` | Post-deploy only (see above)                                    |
 
 
@@ -197,7 +199,7 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 | ---------------------------------------------------------------- | ---------------------------- | ------------------------- |
 | repo root (`services/python/Containerfile` + `model/artifacts/`) | `sentinel-python:latest`     | all python services + API |
 | `ui/` (`ui/Containerfile`)                                       | `sentinel-ui:latest`         | `sentinel-ui`             |
-| NeMo NGC (via ServingRuntime)                                    | InferenceService `tfm-embed` | TFM embeddings (1 GPU)    |
+| NeMo on Quay (`quay.io/shailendra14k/nemo:25.09.01`)             | InferenceService `tfm-embed` | TFM embeddings (1 GPU; no NGC key) |
 
 
 
@@ -210,7 +212,7 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 | `--install-operators` | OLM Subscriptions for AMQ Streams + Console                                                          |
 | `--skip-console`      | Skip Streams Console                                                                                 |
 | `--skip-builds`       | Reuse existing ImageStreams                                                                          |
-| `--rhoai`             | Free GPU → TFM on OpenShift AI (PVC + ngc-secret + `08-openshift-ai/*`); needs clone + `NGC_API_KEY` |
+| `--rhoai`             | Free GPU → TFM on OpenShift AI (PVC + Quay NeMo + `08-openshift-ai/*`); needs clone; **no** `NGC_API_KEY` |
 | `--insecure`          | Skip API TLS verify                                                                                  |
 | `--dry-run`           | Print only                                                                                           |
 
