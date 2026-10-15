@@ -83,8 +83,8 @@ export default function Player360() {
               flex: 1,
               minWidth: 240,
               padding: '0.55rem',
-              background: '#0b1220',
-              color: '#e8eef8',
+              background: '#ffffff',
+              color: '#151515',
               border: '1px solid var(--line)',
             }}
             value={id}

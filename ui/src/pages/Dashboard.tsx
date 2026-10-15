@@ -17,21 +17,22 @@ import { api } from '../api'
 import { DetectionBadgeFromEvent } from '../components/DetectionBadge'
 
 const SEVERITY_COLORS: Record<string, string> = {
-  CRITICAL: '#f43f5e',
-  HIGH: '#fb7185',
-  MEDIUM: '#f59e0b',
-  LOW: '#2dd4bf',
+  CRITICAL: '#c9190b',
+  HIGH: '#ee0000',
+  MEDIUM: '#f0ab00',
+  LOW: '#3e8635',
 }
 
-const CHART_TEAL = '#2dd4bf'
-const CHART_AMBER = '#f59e0b'
-const CHART_MUTED = '#64748b'
+const CHART_TEAL = '#ee0000'
+const CHART_AMBER = '#f0ab00'
+const CHART_MUTED = '#6a6e73'
 const TOOLTIP_STYLE = {
-  background: '#0f172a',
-  border: '1px solid rgba(148,163,184,0.25)',
+  background: '#ffffff',
+  border: '1px solid rgba(21,21,21,0.15)',
+  color: '#151515',
   borderRadius: 0,
   fontSize: 12,
-  fontFamily: 'IBM Plex Mono, monospace',
+  fontFamily: 'Red Hat Display, sans-serif',
 }
 
 function useCountUp(target: number, duration = 700) {
@@ -149,10 +150,10 @@ export default function Dashboard() {
     <div className="ops-console">
       <section className="ops-header">
         <div>
-          <p className="ops-eyebrow">AML operations · OpenShift CDC path</p>
+          <p className="ops-eyebrow">Red Hat AML · OpenShift CDC path</p>
           <h2>Investigation console</h2>
           <p className="ops-sub">
-            Postgres → Debezium → AMQ Streams → enrich → rules/ML → risk → alert
+            Postgres → RH Debezium → AMQ Streams → enrich → rules/ML → risk → alert
           </p>
         </div>
         <div className="ops-meta">
@@ -338,7 +339,7 @@ export default function Dashboard() {
                     type="category"
                     dataKey="rule_id"
                     width={72}
-                    tick={{ fill: '#cbd5e1', fontSize: 11, fontFamily: 'IBM Plex Mono' }}
+                    tick={{ fill: '#6a6e73', fontSize: 11, fontFamily: 'Red Hat Display' }}
                     axisLine={false}
                     tickLine={false}
                   />
@@ -364,7 +365,7 @@ export default function Dashboard() {
                   <XAxis dataKey="i" hide />
                   <YAxis tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} width={36} />
                   <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Area type="stepAfter" dataKey="ms" stroke="#38bdf8" fill="rgba(56,189,248,0.15)" strokeWidth={2} />
+                  <Area type="stepAfter" dataKey="ms" stroke="#2b9af3" fill="rgba(43,154,243,0.15)" strokeWidth={2} />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (

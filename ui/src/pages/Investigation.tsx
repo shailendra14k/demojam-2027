@@ -35,6 +35,23 @@ export default function Investigation() {
     }
   }
 
+  const runJev = async (apply: boolean) => {
+    if (!selected?.alert_id) return
+    const out = await api.jevDecide(selected.alert_id, apply)
+    await load()
+    setSelected((s: any) =>
+      s?.alert_id === selected.alert_id
+        ? {
+            ...s,
+            status: out.status || s.status,
+            jev_decision: out.jev_decision,
+            jev_disposition: out.jev_decision?.disposition,
+            jev_suggested_status: out.jev_decision?.suggested_status,
+          }
+        : s,
+    )
+  }
+
   const selectAlert = (a: any) => {
     setSelected(a)
   }
@@ -91,6 +108,7 @@ export default function Investigation() {
               <tr>
                 <th>Detection</th>
                 <th>Status</th>
+                <th>OpenJev</th>
                 <th>Score</th>
                 <th>Player</th>
               </tr>
@@ -118,6 +136,9 @@ export default function Investigation() {
                     <DetectionBadgeFromAlert alert={a} />
                   </td>
                   <td>{a.status}</td>
+                  <td className="mono">
+                    {a.jev_disposition || a.jev_decision?.disposition || '—'}
+                  </td>
                   <td className="mono">{a.score?.toFixed?.(2)}</td>
                   <td className="mono">
                     <Link to={`/player/${a.player_id}`} onClick={(e) => e.stopPropagation()}>
@@ -184,6 +205,64 @@ export default function Investigation() {
                     <li key={i}>{e}</li>
                   ))}
                 </ul>
+              </div>
+
+              <div>
+                <h3>OpenJev decision layer</h3>
+                <p className="muted">
+                  Detection remains Rules + XGBoost + TFM. OpenJev (open-source System One)
+                  only recommends disposition (escalate / need_info / close).
+                </p>
+                {!selected.jev_decision && (
+                  <p className="muted">No decision yet — run Jev on this alert.</p>
+                )}
+                {selected.jev_decision && (
+                  <>
+                    <div>
+                      Disposition{' '}
+                      <span className="badge HIGH">{selected.jev_decision.disposition}</span>
+                      {' · '}
+                      Jev risk{' '}
+                      <span className={`badge ${String(selected.jev_decision.risk_level || '').toUpperCase()}`}>
+                        {selected.jev_decision.risk_level}
+                      </span>
+                      {' · '}
+                      <span className="mono muted">
+                        conf {(selected.jev_decision.disposition_confidence ?? 0).toFixed?.(2) ?? '—'} ·{' '}
+                        {selected.jev_decision.mode}
+                      </span>
+                    </div>
+                    <p>{selected.jev_decision.rationale}</p>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Red flag</th>
+                          <th>Noul</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(selected.jev_decision.red_flags || {}).map(([k, v]) => (
+                          <tr key={k}>
+                            <td className="mono">{k}</td>
+                            <td className="mono">{typeof v === 'number' ? v.toFixed(2) : String(v)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="muted">
+                      Suggested status:{' '}
+                      <span className="mono">{selected.jev_decision.suggested_status}</span>
+                    </p>
+                  </>
+                )}
+                <div className="btn-row" style={{ marginTop: '0.75rem' }}>
+                  <button className="btn secondary" type="button" onClick={() => runJev(false)}>
+                    Run OpenJev
+                  </button>
+                  <button className="btn" type="button" onClick={() => runJev(true)}>
+                    Apply OpenJev disposition
+                  </button>
+                </div>
               </div>
 
               <div>

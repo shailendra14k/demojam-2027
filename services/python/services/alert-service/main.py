@@ -186,9 +186,22 @@ def handle(key, value):
     if not inserted:
         log.debug("alert already present alert_id=%s event_id=%s", alert.alert_id, event_id)
         return
-    producer.produce(OUT_TOPIC, alert.model_dump(mode="json"), key=alert.player_id)
+    payload = alert.model_dump(mode="json")
+    try:
+        from casino_common.jev_decision import attach_decision
+
+        attach_decision(payload)
+    except Exception as jev_exc:  # noqa: BLE001
+        log.warning("Jev decision skipped: %s", jev_exc)
+    producer.produce(OUT_TOPIC, payload, key=alert.player_id)
     producer.flush()
-    log.info("alert created level=%s score=%.2f", alert.risk_level.value, alert.score)
+    disp = (payload.get("jev_decision") or {}).get("disposition")
+    log.info(
+        "alert created level=%s score=%.2f jev=%s",
+        alert.risk_level.value,
+        alert.score,
+        disp or "—",
+    )
 
 
 def main():

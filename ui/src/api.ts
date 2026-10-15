@@ -31,6 +31,12 @@ export const api = {
   },
   patchAlert: (id: string, body: any) =>
     req<any>(`/api/v1/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  /** Jev disposition layer (escalate / need_info / close). */
+  jevDecide: (id: string, apply = false) =>
+    req<any>(`/api/v1/alerts/${encodeURIComponent(id)}/jev-decide?apply=${apply ? 'true' : 'false'}`, {
+      method: 'POST',
+    }),
+  jevStatus: () => req<any>('/api/v1/jev/status'),
   rulesCatalog: () => req<any>('/api/v1/rules/catalog'),
   cases: () => req<any>('/api/v1/cases'),
   sars: () => req<any>('/api/v1/sars'),

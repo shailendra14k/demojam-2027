@@ -17,8 +17,11 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <h1>CASINO SENTINEL</h1>
-          <span>Merged · OpenShift · AMQ Streams 4.2 · RH Debezium · AML investigator</span>
+          <div className="brand-mark" aria-hidden>RH</div>
+          <div className="brand-copy">
+            <h1>Casino Sentinel</h1>
+            <span>Red Hat · OpenShift · AMQ Streams · Debezium · AML</span>
+          </div>
         </div>
         <nav className="nav">
           <NavLink to="/" end>Dashboard</NavLink>

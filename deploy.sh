@@ -18,6 +18,7 @@ SKIP_OPERATORS=true
 SKIP_CONSOLE=false
 SKIP_BUILDS=false
 DEPLOY_RHOAI=false
+DEPLOY_OPENJEV=false
 DRY_RUN=false
 ENV_FILE=""
 
@@ -41,6 +42,7 @@ Optional:
   --skip-console       Do not deploy Streams Console
   --skip-builds        Reuse existing ImageStream tags
   --rhoai              Deploy TFM on OpenShift AI (ServingRuntime + InferenceService)
+  --openjev            Build/deploy in-cluster OpenJev (Verdict CPU) + point casino-config at it
   --dry-run            Print commands only
   -h, --help
 
@@ -48,6 +50,7 @@ Default (./deploy.sh --env ./.env --insecure):
   PostgreSQL + AMQ Streams + Streams Console + Debezium + microservice AML pipeline + UI.
   XGBoost scores in sentinel-ml-engine from joblib (no OpenShift AI).
   TFM_MODE=hashed / AI_MODE=mock on casino-config.
+  OpenJev disposition via Codiv (OPENJEV_BASE_URL=https://api.codiv.ai) when TYPESAFE_API_KEY/CODIV key set.
 
 With --rhoai (OpenShift AI KServe + 1 GPU):
   Prerequisite: ../nvidia-tfm/clone-nvidia-tfm.sh  → model/decoder-foundation-model/
@@ -336,6 +339,62 @@ ensure_ngc_secret() {
   ok "Secret ngc-secret created"
 }
 
+ensure_typesafe_jev_secret() {
+  # Opaque secret for OpenJev / Codiv (System One). Mounted by sentinel-api + alert-service.
+  local key="${TYPESAFE_API_KEY:-${JEV_API_KEY:-${CODIV_API_KEY:-}}}"
+  if [[ -z "${key}" ]]; then
+    if oc get secret typesafe-jev -n "${NAMESPACE}" >/dev/null 2>&1; then
+      ok "Secret typesafe-jev already present"
+      return 0
+    fi
+    if [[ "${DEPLOY_OPENJEV}" == true ]]; then
+      key="local"
+      log "In-cluster OpenJev: creating placeholder Secret typesafe-jev (TYPESAFE_API_KEY=local)"
+    else
+      log "WARNING: no CODIV/TYPESAFE_API_KEY — OpenJev live calls fall back to mock (get a free key at https://codiv.ai)"
+      return 0
+    fi
+  fi
+  log "Creating/updating Secret typesafe-jev for OpenJev"
+  if [[ "${DRY_RUN}" == true ]]; then
+    echo "DRY-RUN oc create secret generic typesafe-jev"
+    return 0
+  fi
+  oc create secret generic typesafe-jev \
+    --from-literal=TYPESAFE_API_KEY="${key}" \
+    --from-literal=JEV_API_KEY="${key}" \
+    --from-literal=CODIV_API_KEY="${key}" \
+    -n "${NAMESPACE}" \
+    --dry-run=client -o yaml | oc apply -f -
+  ok "Secret typesafe-jev ready"
+}
+
+deploy_openjev() {
+  if [[ "${DEPLOY_OPENJEV}" != true ]]; then
+    return 0
+  fi
+  log "Deploying in-cluster OpenJev (Verdict CPU)"
+  apply "${MANIFESTS}/09-openjev/openjev.yaml"
+  if [[ "${DRY_RUN}" == true ]]; then
+    return 0
+  fi
+  if [[ "${SKIP_BUILDS}" != true ]]; then
+    start_build openjev "${SCRIPT_DIR}"
+  fi
+  wait_deploy openjev 420 || true
+  local base="http://openjev.${NAMESPACE}.svc:8080"
+  oc patch configmap casino-config -n "${NAMESPACE}" --type=merge -p "{
+    \"data\": {
+      \"JEV_MODE\": \"live\",
+      \"JEV_MODEL\": \"verdict-1.4\",
+      \"OPENJEV_BASE_URL\": \"${base}\",
+      \"TYPESAFE_BASE_URL\": \"${base}\"
+    }
+  }"
+  oc rollout restart deploy/sentinel-api deploy/sentinel-alert-service -n "${NAMESPACE}" || true
+  ok "OpenJev in-cluster at ${base} (JEV_MODEL=verdict-1.4)"
+}
+
 ensure_tfm_checkpoint_pvc() {
   local ckpt_dir="${SCRIPT_DIR}/model/decoder-foundation-model"
   local safetensors="${ckpt_dir}/model-00001-of-00001.safetensors"
@@ -588,6 +647,7 @@ while [[ $# -gt 0 ]]; do
     --skip-console)       SKIP_CONSOLE=true; shift ;;
     --skip-builds)        SKIP_BUILDS=true; shift ;;
     --rhoai)              DEPLOY_RHOAI=true; shift ;;
+    --openjev)            DEPLOY_OPENJEV=true; shift ;;
     --dry-run)            DRY_RUN=true; shift ;;
     -h|--help)            usage; exit 0 ;;
     *)                    die "Unknown argument: $1" ;;
@@ -629,8 +689,10 @@ apply "${MANIFESTS}/03-topics/topics.yaml"
 apply "${MANIFESTS}/04-debezium/imagestream.yaml"
 apply "${MANIFESTS}/04-debezium/kafka-connect.yaml"
 
+ensure_typesafe_jev_secret
 apply "${MANIFESTS}/06-apps/services.yaml"
 apply "${MANIFESTS}/06-apps/ui.yaml"
+deploy_openjev
 apply "${MANIFESTS}/07-monitoring/monitoring.yaml" || true
 for d in \
   sentinel-event-normalizer \

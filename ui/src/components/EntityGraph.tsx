@@ -17,13 +17,13 @@ export type GraphEdge = {
 }
 
 const KIND_COLOR: Record<string, string> = {
-  alert: '#f43f5e',
-  player: '#38bdf8',
-  device: '#f59e0b',
-  payment: '#a78bfa',
-  location: '#34d399',
-  rule: '#2dd4bf',
-  watchlist: '#fb7185',
+  alert: '#c9190b',
+  player: '#2b9af3',
+  device: '#f0ab00',
+  payment: '#73c5c5',
+  location: '#3e8635',
+  rule: '#ee0000',
+  watchlist: '#a30000',
 }
 
 type Pos = { x: number; y: number; vx: number; vy: number }

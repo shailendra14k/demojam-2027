@@ -396,10 +396,38 @@ def hydrate_live_events_from_db(limit: int = 100) -> int:
         return 0
 
 
-def _ingest_alert(alert: dict[str, Any]) -> None:
+def _ingest_alert(alert: dict[str, Any], *, skip_jev: bool = False) -> None:
     aid = str(alert.get("alert_id") or "")
     if not aid or aid in _ALERT_IDS:
         return
+    # OpenJev live calls are slow for bulk DB hydrate — skip there; Kafka/local still decide.
+    # Investigators can POST /api/v1/alerts/{id}/jev-decide (or use Apply in the UI).
+    if not skip_jev:
+        try:
+            from casino_common.jev_decision import attach_decision, jev_mode
+
+            mode = jev_mode()
+            # Auto-decide new alerts with mock always; live OpenJev on explicit decide or when forced.
+            if mode in ("live", "openjev") and not os.getenv("JEV_AUTO_LIVE", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            ):
+                prev = os.environ.get("JEV_MODE")
+                os.environ["JEV_MODE"] = "mock"
+                try:
+                    attach_decision(alert)
+                    if isinstance(alert.get("jev_decision"), dict):
+                        alert["jev_decision"]["note"] = "auto=mock; use Run OpenJev for live in-cluster"
+                finally:
+                    if prev is None:
+                        os.environ.pop("JEV_MODE", None)
+                    else:
+                        os.environ["JEV_MODE"] = prev
+            else:
+                attach_decision(alert)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Jev decision attach skipped: %s", exc)
     _ALERT_IDS.add(aid)
     ALERTS.insert(0, alert)
     pid = str(alert.get("player_id") or "")
@@ -762,7 +790,7 @@ def hydrate_alerts_from_db(player_ids: list[str] | None = None, since: datetime 
                 if pid_set and alert.get("player_id") not in pid_set:
                     continue
                 before = len(_ALERT_IDS)
-                _ingest_alert(alert)
+                _ingest_alert(alert, skip_jev=True)
                 if len(_ALERT_IDS) > before:
                     added += 1
         return added
@@ -954,6 +982,8 @@ def pipeline_status():
     tfm_ok, tfm_detail = _probe_tfm_embed(tfm_mode, tfm_url, deploy_health)
     # Canonical TFM entry for the flow diagram (hashed/mock = optional healthy).
     deploy_health["tfm-embed"] = {"ok": tfm_ok, "detail": tfm_detail}
+    jev_ok, jev_detail, jev_meta = _probe_openjev(deploy_health)
+    deploy_health["openjev"] = {"ok": jev_ok, "detail": jev_detail}
 
     # Stage strip: prefer live component probes over static PIPELINE_STATUS.
     stage_keys: dict[str, list[str]] = {
@@ -1113,6 +1143,16 @@ def pipeline_status():
             activity=stage_activity["ALERT"],
         ),
         _node(
+            "openjev",
+            "OpenJev disposition",
+            kind="decide",
+            deploy="openjev",
+            detail=jev_detail,
+            activity=alerts_n if jev_ok and not jev_meta.get("optional") else 0,
+            optional=bool(jev_meta.get("optional")),
+            ok=jev_ok,
+        ),
+        _node(
             "api",
             "sentinel-api",
             kind="api",
@@ -1143,6 +1183,8 @@ def pipeline_status():
         ("ml", "risk"),
         ("risk", "alerts"),
         ("alerts", "api"),
+        ("alerts", "openjev"),
+        ("openjev", "api"),
         ("api", "ui"),
     ]
     edges = []
@@ -1156,6 +1198,9 @@ def pipeline_status():
             continue
         if src == "tfm" and tfm_mode != "http":
             continue
+        # Hide OpenJev edges when disposition is fully off
+        if "openjev" in (src, dst) and jev_meta.get("mode") in ("off", "disabled"):
+            continue
         flowing = bool(a.get("ok") and b.get("ok") and (a.get("activity") or 0) > 0)
         edges.append({"from": src, "to": dst, "flowing": flowing})
 
@@ -1165,12 +1210,20 @@ def pipeline_status():
         "components": components,
         "edges": edges,
         "tfm": {"mode": tfm_mode, "url": tfm_url, "ok": tfm_ok, "detail": tfm_detail},
+        "openjev": {
+            "mode": jev_meta.get("mode"),
+            "model": jev_meta.get("model"),
+            "url": jev_meta.get("url"),
+            "ok": jev_ok,
+            "detail": jev_detail,
+            "optional": bool(jev_meta.get("optional")),
+        },
         "ai_mode": ai_mode,
         "uptime_seconds": int(time.time() - START_TIME),
         "events_buffered": events_n,
         "open_alerts": sum(1 for a in ALERTS if a["status"] == "OPEN"),
         "note": (
-            "OpenShift CDC path: Postgres → Debezium → Kafka → microservices"
+            "OpenShift CDC path: Postgres → Debezium → Kafka → microservices → OpenJev disposition"
             if PIPELINE_MODE == "cdc"
             else "Local in-process path (API-only); not used on OpenShift"
         ),
@@ -1355,6 +1408,7 @@ def _pipeline_component_health() -> dict[str, dict[str, Any]]:
         "sentinel-alert-service",
         "sentinel-api",
         "sentinel-ui",
+        "openjev",
     ):
         ok, detail = _deploy(name)
         # Live HTTP for API/UI (have ClusterIP Services)
@@ -1370,6 +1424,15 @@ def _pipeline_component_health() -> dict[str, dict[str, Any]]:
                 detail = f"{detail}; {h_detail}"
             else:
                 # Deployment Ready alone is enough if HTTP blocked
+                detail = f"{detail}; http={h_detail}"
+        elif name == "openjev":
+            h_ok, h_detail = _http("http://openjev:8080/v1/models")
+            if h_ok:
+                ok = True
+                detail = f"{detail}; {h_detail}"
+            elif not ok:
+                detail = f"{detail}; http={h_detail}"
+            else:
                 detail = f"{detail}; http={h_detail}"
         out[name] = {"ok": ok, "detail": detail}
 
@@ -1390,6 +1453,44 @@ def _pipeline_component_health() -> dict[str, dict[str, Any]]:
     # Absent ISVC is fine when TFM_MODE!=http; pipeline_status merges via _probe_tfm_embed
 
     return out
+
+
+def _probe_openjev(
+    deploy_health: dict[str, dict[str, Any]] | None = None,
+) -> tuple[bool, str, dict[str, Any]]:
+    """OpenJev disposition service health (post-alert decision layer)."""
+    from casino_common.jev_decision import jev_mode, openjev_base_url, openjev_model
+
+    mode = jev_mode()
+    base = openjev_base_url()
+    model = openjev_model()
+    meta: dict[str, Any] = {"mode": mode, "model": model, "url": base, "optional": False}
+
+    if mode in ("off", "disabled", "false", "0"):
+        meta["optional"] = True
+        return True, "JEV_MODE=off (disposition disabled)", meta
+
+    if mode == "mock":
+        meta["optional"] = True
+        return True, "JEV_MODE=mock (local heuristics; OpenJev standby)", meta
+
+    # live / openjev — prefer in-cluster deploy + /v1/models
+    dh = (deploy_health or {}).get("openjev")
+    if dh is not None:
+        ok = bool(dh.get("ok"))
+        detail = str(dh.get("detail") or "openjev")
+        if not ok and "codiv.ai" in base:
+            # Hosted Codiv fallback — deploy may be absent
+            meta["optional"] = False
+            return True, f"Codiv hosted OpenJev ({base}); in-cluster deploy down: {detail}", meta
+        return ok, detail, meta
+
+    # No deploy probe (local) — treat configured live URL as optional healthy
+    if "codiv.ai" in base or base.startswith("http"):
+        meta["optional"] = "codiv.ai" in base
+        return True, f"OpenJev URL {base} model={model}", meta
+    meta["optional"] = True
+    return True, f"OpenJev not deployed ({mode})", meta
 
 
 def _probe_tfm_embed(
@@ -1697,6 +1798,71 @@ def patch_alert(alert_id: str, body: AlertPatch):
             ALERTS_GAUGE.set(sum(1 for x in ALERTS if x["status"] == "OPEN"))
             return a
     raise HTTPException(404, "alert not found")
+
+
+@app.post("/api/v1/alerts/{alert_id}/jev-decide")
+def jev_decide_alert(alert_id: str, apply: bool = Query(False, description="Apply suggested status")):
+    """Run (or refresh) the Jev disposition decision layer for an alert."""
+    REQUESTS.labels(endpoint="jev_decide").inc()
+    from casino_common.jev_decision import attach_decision, jev_mode
+
+    for a in ALERTS:
+        if a["alert_id"] != alert_id:
+            continue
+        attach_decision(a, force=True)
+        decision = a.get("jev_decision") or {}
+        if apply and decision.get("suggested_status"):
+            a["status"] = decision["suggested_status"]
+            a["updated_at"] = datetime.now(timezone.utc).isoformat()
+            note = f"Jev disposition={decision.get('disposition')} ({decision.get('mode')})"
+            a.setdefault("notes", []).append(note)
+            ALERTS_GAUGE.set(sum(1 for x in ALERTS if x["status"] == "OPEN"))
+        return {
+            "alert_id": alert_id,
+            "jev_mode": jev_mode(),
+            "applied": bool(apply),
+            "status": a.get("status"),
+            "jev_decision": decision,
+        }
+    if PIPELINE_MODE == "cdc":
+        hydrate_alerts_from_db()
+        for a in ALERTS:
+            if a["alert_id"] == alert_id:
+                attach_decision(a, force=True)
+                return {
+                    "alert_id": alert_id,
+                    "jev_mode": jev_mode(),
+                    "applied": False,
+                    "status": a.get("status"),
+                    "jev_decision": a.get("jev_decision"),
+                }
+    raise HTTPException(404, "alert not found")
+
+
+@app.get("/api/v1/jev/status")
+def jev_status():
+    """OpenJev decision-layer config (no secrets)."""
+    from casino_common.jev_decision import jev_mode, openjev_base_url, openjev_model
+
+    key_set = bool(
+        (
+            os.getenv("TYPESAFE_API_KEY")
+            or os.getenv("JEV_API_KEY")
+            or os.getenv("CODIV_API_KEY")
+            or ""
+        ).strip()
+    )
+    base = openjev_base_url()
+    return {
+        "provider": "openjev",
+        "jev_mode": jev_mode(),
+        "model": openjev_model(),
+        "base_url": base,
+        "api_key_configured": key_set or ("openjev" in base or ".svc" in base),
+        "role": "disposition_only",
+        "detection_stack": ["rules", "xgboost", "tfm_behavioral"],
+        "docs": "https://github.com/razorback16/openjev",
+    }
 
 
 def _serialize_value(value: Any) -> Any:
