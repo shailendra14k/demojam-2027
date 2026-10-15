@@ -15,6 +15,7 @@ import {
 } from 'recharts'
 import { api } from '../api'
 import { DetectionBadgeFromEvent } from '../components/DetectionBadge'
+import { formatRuleNames, ruleDisplayName } from '../lib/alertLabels'
 
 const SEVERITY_COLORS: Record<string, string> = {
   CRITICAL: '#c9190b',
@@ -124,7 +125,14 @@ export default function Dashboard() {
 
   const volumeData = data?.alert_volume || []
   const histData = data?.risk_histogram || []
-  const ruleData = (data?.rule_hit_frequency || []).slice(0, 8)
+  const ruleData = useMemo(
+    () =>
+      (data?.rule_hit_frequency || []).slice(0, 8).map((d: any) => ({
+        ...d,
+        rule_name: d.rule_name || ruleDisplayName(d.rule_id || d),
+      })),
+    [data],
+  )
   const latencySpark = (data?.latency_samples || []).map((v: number, i: number) => ({
     i: i + 1,
     ms: v,
@@ -328,7 +336,7 @@ export default function Dashboard() {
         <div className="panel span-6">
           <div className="panel-head">
             <h3>Rule hit frequency</h3>
-            <span className="muted mono">AML-001…008</span>
+            <span className="muted mono">top fired</span>
           </div>
           <div className="chart-box">
             {ruleData.length ? (
@@ -337,8 +345,8 @@ export default function Dashboard() {
                   <XAxis type="number" tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis
                     type="category"
-                    dataKey="rule_id"
-                    width={72}
+                    dataKey="rule_name"
+                    width={140}
                     tick={{ fill: '#6a6e73', fontSize: 11, fontFamily: 'Red Hat Display' }}
                     axisLine={false}
                     tickLine={false}
@@ -390,8 +398,8 @@ export default function Dashboard() {
                   {String(e.event?.player_id || '—').slice(0, 8)}
                 </Link>
                 <span className="mono">{e.risk?.final_score?.toFixed?.(2) ?? '—'}</span>
-                <span className="feed-rules mono muted">
-                  {(e.rules?.hits || e.risk?.rule_hits || []).map((h: any) => h.rule_id).join(' ') || '—'}
+                <span className="feed-rules muted">
+                  {formatRuleNames(e.rules?.hits || e.risk?.rule_hits || [], ' · ')}
                 </span>
               </div>
             ))}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { API_BASE, api } from '../api'
 import { DetectionBadgeFromEvent } from '../components/DetectionBadge'
+import { formatRuleNames } from '../lib/alertLabels'
 
 export default function LiveMonitor() {
   const [events, setEvents] = useState<any[]>([])
@@ -72,7 +73,7 @@ export default function LiveMonitor() {
                   <td className="mono">{e.event?.amount ?? '—'}</td>
                   <td><DetectionBadgeFromEvent row={e} /></td>
                   <td className="mono">{e.risk?.final_score?.toFixed?.(2) ?? e.risk?.final_score}</td>
-                  <td className="mono">{(e.rules?.hits || []).map((h: any) => h.rule_id).join(', ') || '—'}</td>
+                  <td>{formatRuleNames(e.rules?.hits)}</td>
                 </tr>
               ))
             )}

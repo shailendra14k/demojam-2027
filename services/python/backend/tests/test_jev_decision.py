@@ -65,3 +65,69 @@ def test_attach_fields(monkeypatch):
     attach_decision(alert, force=True)
     assert alert["jev_disposition"] in ("escalate", "need_info", "close")
     assert alert["jev_suggested_status"]
+
+
+def test_reconcile_overrides_weak_close(monkeypatch):
+    from casino_common.jev_decision import _mock_decide, _reconcile_disposition, build_state
+
+    monkeypatch.setenv("JEV_MODE", "live")
+    state = build_state(
+        {
+            "alert_id": "a5",
+            "score": 0.9,
+            "risk_level": "HIGH",
+            "rule_hits": [{"rule_id": "AML-001"}],
+            "summary": "structuring",
+        }
+    )
+    heuristic = _mock_decide(state)
+    assert heuristic["disposition"] == "escalate"
+    live = {
+        "disposition": "close",
+        "disposition_confidence": 0.03,
+        "suggested_status": "CLOSED",
+        "mode": "openjev",
+        "model": "verdict-1.4",
+    }
+    out = _reconcile_disposition(
+        live,
+        heuristic,
+        raw_disp={
+            "choice": "close",
+            "confidence": 0.03,
+            "probabilities": {"escalate": 0.3, "need_info": 0.25, "close": 0.45},
+        },
+    )
+    assert out["disposition"] == "escalate"
+    assert out["mode"] == "hybrid"
+    assert out["policy_applied"] is True
+    assert "Escalate" in out["rationale"] or "escalate" in out["rationale"].lower()
+
+
+def test_policy_covers_three_dispositions(monkeypatch):
+    monkeypatch.setenv("JEV_MODE", "mock")
+    escalate = decide_alert(
+        {
+            "alert_id": "e",
+            "score": 0.95,
+            "risk_level": "CRITICAL",
+            "rule_hits": [{"rule_id": "AML-015"}],
+        },
+        force=True,
+    )
+    need = decide_alert(
+        {
+            "alert_id": "n",
+            "score": 0.55,
+            "risk_level": "MEDIUM",
+            "rule_hits": [{"rule_id": "AML-007"}],
+        },
+        force=True,
+    )
+    close = decide_alert(
+        {"alert_id": "c", "score": 0.15, "risk_level": "LOW", "rule_hits": []},
+        force=True,
+    )
+    assert escalate and escalate["disposition"] == "escalate"
+    assert need and need["disposition"] == "need_info"
+    assert close and close["disposition"] == "close"

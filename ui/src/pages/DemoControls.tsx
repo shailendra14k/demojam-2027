@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { DetectionBadgeFromAlert } from '../components/DetectionBadge'
-import { eventDisplayLabel } from '../lib/alertLabels'
+import { eventDisplayLabel, ruleDisplayName } from '../lib/alertLabels'
 
 const LABELS: Record<string, string> = {
   normal: 'Generate Normal Transaction',
@@ -126,9 +126,10 @@ export default function DemoControls() {
             <div className="panel span-6" key={name}>
               <h3>{LABELS[name] || name}</h3>
               <p className="muted">{meta.description}</p>
-              <p className="mono">
+              <p className="muted">
                 Expected rules:{' '}
-                {(meta.expected_rules || meta.rule_ids || []).join(', ') || 'none (benign)'}
+                {(meta.expected_rules || meta.rule_ids || []).map(ruleDisplayName).join(', ') ||
+                  'none (benign)'}
               </p>
               <button className="btn" disabled={!!busy} onClick={() => run(name)}>
                 {busy === name ? 'Running…' : LABELS[name] || 'Run scenario'}

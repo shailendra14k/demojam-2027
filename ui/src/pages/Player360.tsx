@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { DetectionBadgeFromAlert } from '../components/DetectionBadge'
+import { formatRuleNames } from '../lib/alertLabels'
 
 function money(v: unknown) {
   if (v == null || v === '') return '—'
@@ -378,9 +379,7 @@ export default function Player360() {
                     <td>
                       <span className={`badge ${e.risk?.risk_level}`}>{e.risk?.risk_level}</span>
                     </td>
-                    <td className="mono">
-                      {(e.rules?.hits || []).map((h: any) => h.rule_id).join(', ')}
-                    </td>
+                    <td>{formatRuleNames(e.rules?.hits)}</td>
                   </tr>
                 ))}
               </tbody>

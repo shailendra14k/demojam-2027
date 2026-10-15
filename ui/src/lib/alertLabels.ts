@@ -1,5 +1,24 @@
 /** Human-readable AML detection labels (mirrors casino_common.alert_labels). */
 
+/** Short rule names from RULE_CATALOG — preferred for lists/tables. */
+export const RULE_NAMES: Record<string, string> = {
+  'AML-001': 'Structuring / Smurfing',
+  'AML-002': 'Minimal Gaming',
+  'AML-003': 'Rapid Withdrawal',
+  'AML-004': 'Chip-Cage Layering',
+  'AML-005': 'Shared Device',
+  'AML-006': 'Impossible Travel',
+  'AML-007': 'Behavioral Deviation',
+  'AML-008': 'High-Value Spike',
+  'AML-009': 'CTR Threshold',
+  'AML-010': 'Cage Structuring',
+  'AML-011': 'High Velocity',
+  'AML-012': 'Multi-Instrument',
+  'AML-013': 'Rapid Wire',
+  'AML-014': 'Large TITO',
+  'AML-015': 'Watchlist / PEP',
+}
+
 const RULE_AI_LABELS: Record<string, string> = {
   'AML-001': 'AI Detected Structuring / Smurfing',
   'AML-002': 'AI Detected Money Laundering',
@@ -36,6 +55,40 @@ function labelForRuleId(id: string): string | undefined {
   const upper = id.toUpperCase()
   if (RULE_AI_LABELS[upper]) return RULE_AI_LABELS[upper]
   return undefined
+}
+
+function nameForRuleId(id: string): string | undefined {
+  if (!id) return undefined
+  if (RULE_NAMES[id]) return RULE_NAMES[id]
+  const upper = id.toUpperCase()
+  if (RULE_NAMES[upper]) return RULE_NAMES[upper]
+  return undefined
+}
+
+/** Display name for a rule hit or id string — never prefer raw AML-xxx in the UI. */
+export function ruleDisplayName(hit: unknown): string {
+  if (!hit) return '—'
+  if (typeof hit === 'string') {
+    return nameForRuleId(hit) || hit
+  }
+  if (typeof hit === 'object') {
+    const h = hit as Record<string, unknown>
+    const name = String(h.rule_name ?? h.name ?? '').trim()
+    if (name && !/^AML-\d{3}$/i.test(name)) return name
+    const id = ruleId(hit)
+    return nameForRuleId(id) || name || id || '—'
+  }
+  return String(hit)
+}
+
+export function formatRuleNames(hits: unknown[] | undefined | null, sep = ', '): string {
+  if (!hits?.length) return '—'
+  const names: string[] = []
+  for (const h of hits) {
+    const n = ruleDisplayName(h)
+    if (n && n !== '—' && !names.includes(n)) names.push(n)
+  }
+  return names.join(sep) || '—'
 }
 
 function isGenericTitle(title?: string | null): boolean {

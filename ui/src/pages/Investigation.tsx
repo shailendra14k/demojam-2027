@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { DetectionBadgeFromAlert } from '../components/DetectionBadge'
-import { alertDisplayLabel } from '../lib/alertLabels'
+import { alertDisplayLabel, formatRuleNames, ruleDisplayName } from '../lib/alertLabels'
 
 function when(v: unknown) {
   if (!v) return '—'
@@ -10,15 +10,27 @@ function when(v: unknown) {
   return s.length > 19 ? s.slice(0, 19).replace('T', ' ') : s
 }
 
+function jevNeedsRun(alert: any): boolean {
+  if (!alert) return false
+  if (alert.jev_pending) return true
+  const d = alert.jev_decision
+  if (!d) return true
+  const mode = String(d.mode || '').toLowerCase()
+  return mode === '' || mode === 'mock' || mode === 'mock_fallback' || mode === 'pending'
+}
+
 export default function Investigation() {
   const [alerts, setAlerts] = useState<any[]>([])
   const [events, setEvents] = useState<any[]>([])
   const [selected, setSelected] = useState<any>(null)
+  const [jevBusy, setJevBusy] = useState(false)
+  const [jevError, setJevError] = useState<string | null>(null)
 
   const load = async () => {
     const [a, e] = await Promise.all([api.alerts(), api.events()])
     setAlerts(a.items || [])
     setEvents(e.items || [])
+    return a.items || []
   }
 
   useEffect(() => {
@@ -27,33 +39,83 @@ export default function Investigation() {
     return () => clearInterval(t)
   }, [])
 
-  const update = async (id: string, status: string) => {
-    await api.patchAlert(id, { status })
-    await load()
-    if (selected?.alert_id === id) {
-      setSelected((s: any) => ({ ...s, status }))
-    }
-  }
-
-  const runJev = async (apply: boolean) => {
-    if (!selected?.alert_id) return
-    const out = await api.jevDecide(selected.alert_id, apply)
-    await load()
+  const mergeJev = (alertId: string, out: any) => {
     setSelected((s: any) =>
-      s?.alert_id === selected.alert_id
+      s?.alert_id === alertId
         ? {
             ...s,
             status: out.status || s.status,
+            jev_pending: !!out.pending,
             jev_decision: out.jev_decision,
             jev_disposition: out.jev_decision?.disposition,
             jev_suggested_status: out.jev_decision?.suggested_status,
           }
         : s,
     )
+    setAlerts((list) =>
+      list.map((a) =>
+        a.alert_id === alertId
+          ? {
+              ...a,
+              status: out.status || a.status,
+              jev_pending: !!out.pending,
+              jev_decision: out.jev_decision,
+              jev_disposition: out.jev_decision?.disposition,
+              jev_suggested_status: out.jev_decision?.suggested_status,
+            }
+          : a,
+      ),
+    )
+  }
+
+  const runJev = async (apply: boolean, opts?: { silent?: boolean }) => {
+    if (!selected?.alert_id) return
+    const alertId = selected.alert_id
+    if (!opts?.silent) setJevBusy(true)
+    setJevError(null)
+    try {
+      let out = await api.jevDecide(alertId, apply)
+      mergeJev(alertId, out)
+      // Poll while OpenJev is still running in the background.
+      let tries = 0
+      while (out.pending && tries < 40) {
+        await new Promise((r) => setTimeout(r, 1500))
+        out = await api.jevDecide(alertId, false)
+        mergeJev(alertId, out)
+        tries += 1
+        if (!out.pending && !jevNeedsRun({ jev_decision: out.jev_decision })) break
+      }
+      await load()
+      if (out.pending) {
+        setJevError('OpenJev is still running — click Run OpenJev again in a moment.')
+      }
+    } catch (err: any) {
+      setJevError(err?.message || 'OpenJev request failed')
+    } finally {
+      setJevBusy(false)
+    }
   }
 
   const selectAlert = (a: any) => {
     setSelected(a)
+    setJevError(null)
+  }
+
+  // Auto-run OpenJev when an alert is selected without a live decision.
+  useEffect(() => {
+    if (!selected?.alert_id) return
+    if (!jevNeedsRun(selected)) return
+    if (jevBusy) return
+    runJev(false, { silent: true }).catch(() => undefined)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.alert_id])
+
+  const update = async (id: string, status: string) => {
+    await api.patchAlert(id, { status })
+    await load()
+    if (selected?.alert_id === id) {
+      setSelected((s: any) => ({ ...s, status }))
+    }
   }
 
   const supporting = useMemo(() => {
@@ -183,10 +245,8 @@ export default function Investigation() {
                   </thead>
                   <tbody>
                     {(selected.rule_hits || []).map((h: any, i: number) => (
-                      <tr key={`${h.rule_id}-${i}`}>
-                        <td className="mono">
-                          {h.rule_id} {h.rule_name ? `· ${h.rule_name}` : ''}
-                        </td>
+                      <tr key={`${h.rule_id || h.rule_name}-${i}`}>
+                        <td>{ruleDisplayName(h)}</td>
                         <td>
                           <span className={`badge ${h.severity}`}>{h.severity}</span>
                         </td>
@@ -210,13 +270,18 @@ export default function Investigation() {
               <div>
                 <h3>OpenJev decision layer</h3>
                 <p className="muted">
-                  Detection remains Rules + XGBoost + TFM. OpenJev (open-source System One)
-                  only recommends disposition (escalate / need_info / close).
+                  Detection remains Rules + XGBoost + TFM. OpenJev runs automatically on new
+                  alerts and recommends disposition (escalate / need_info / close). Use the
+                  button if a decision is still missing.
                 </p>
-                {!selected.jev_decision && (
-                  <p className="muted">No decision yet — run Jev on this alert.</p>
+                {(jevBusy || selected.jev_pending || selected.jev_decision?.mode === 'pending') && (
+                  <p className="muted">Running OpenJev…</p>
                 )}
-                {selected.jev_decision && (
+                {jevError && <p className="error">{jevError}</p>}
+                {!selected.jev_decision && !jevBusy && (
+                  <p className="muted">No decision yet — starting OpenJev…</p>
+                )}
+                {selected.jev_decision && selected.jev_decision.mode !== 'pending' && (
                   <>
                     <div>
                       Disposition{' '}
@@ -256,10 +321,20 @@ export default function Investigation() {
                   </>
                 )}
                 <div className="btn-row" style={{ marginTop: '0.75rem' }}>
-                  <button className="btn secondary" type="button" onClick={() => runJev(false)}>
-                    Run OpenJev
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    disabled={jevBusy}
+                    onClick={() => runJev(false)}
+                  >
+                    {jevBusy ? 'Running OpenJev…' : 'Run OpenJev'}
                   </button>
-                  <button className="btn" type="button" onClick={() => runJev(true)}>
+                  <button
+                    className="btn"
+                    type="button"
+                    disabled={jevBusy || !selected.jev_decision || selected.jev_decision.mode === 'pending'}
+                    onClick={() => runJev(true)}
+                  >
                     Apply OpenJev disposition
                   </button>
                 </div>
@@ -295,9 +370,7 @@ export default function Investigation() {
                               {e.risk?.risk_level}
                             </span>
                           </td>
-                          <td className="mono">
-                            {(e.rules?.hits || []).map((h: any) => h.rule_id).join(', ') || '—'}
-                          </td>
+                          <td>{formatRuleNames(e.rules?.hits)}</td>
                         </tr>
                       ))}
                     </tbody>

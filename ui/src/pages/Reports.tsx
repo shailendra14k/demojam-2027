@@ -32,7 +32,7 @@ export default function Reports() {
       {stats && (
         <ul>
           <li>Open / recent alerts: <strong>{stats.alerts}</strong></li>
-          <li>CTR-related (AML-009): <strong>{stats.ctrRelated}</strong></li>
+          <li>CTR-related (CTR Threshold): <strong>{stats.ctrRelated}</strong></li>
           <li>Critical alerts: <strong>{stats.critical}</strong></li>
           <li>SAR drafts: <strong>{stats.sarDrafts}</strong></li>
           <li>Open cases: <strong>{stats.openCases}</strong></li>

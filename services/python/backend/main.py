@@ -396,34 +396,91 @@ def hydrate_live_events_from_db(limit: int = 100) -> int:
         return 0
 
 
+_JEV_LOCK = threading.Lock()
+_JEV_INFLIGHT: set[str] = set()
+
+
+def _schedule_openjev(alert: dict[str, Any], *, force: bool = False) -> str:
+    """Run OpenJev in a background thread so HTTP routes stay under timeout limits."""
+    from casino_common.jev_decision import _needs_live_refresh, attach_decision, jev_mode
+
+    aid = str(alert.get("alert_id") or "")
+    if not aid:
+        return "missing_id"
+    mode = jev_mode()
+    if mode in ("off", "disabled", "false", "0"):
+        return "off"
+    if not force and not _needs_live_refresh(alert.get("jev_decision")):
+        return "ready"
+    with _JEV_LOCK:
+        if aid in _JEV_INFLIGHT:
+            return "pending"
+        _JEV_INFLIGHT.add(aid)
+    alert["jev_pending"] = True
+    if not isinstance(alert.get("jev_decision"), dict):
+        alert["jev_decision"] = {
+            "mode": "pending",
+            "disposition": "need_info",
+            "rationale": "OpenJev running…",
+            "suggested_status": "INVESTIGATING",
+        }
+
+    def _run() -> None:
+        try:
+            attach_decision(alert, force=True)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("OpenJev background decide failed for %s: %s", aid, exc)
+        finally:
+            alert["jev_pending"] = False
+            with _JEV_LOCK:
+                _JEV_INFLIGHT.discard(aid)
+
+    threading.Thread(target=_run, name=f"openjev-{aid[:8]}", daemon=True).start()
+    return "pending"
+
+
+def _backfill_openjev(limit: int = 12) -> int:
+    """Queue live OpenJev for recent alerts that still lack a real decision."""
+    from casino_common.jev_decision import _needs_live_refresh, jev_mode
+
+    if jev_mode() not in ("live", "openjev"):
+        return 0
+    auto = (os.getenv("JEV_AUTO_LIVE") or "true").strip().lower()
+    if auto in ("0", "false", "no", "off"):
+        return 0
+    queued = 0
+    for a in list(ALERTS):
+        if queued >= limit:
+            break
+        if not _needs_live_refresh(a.get("jev_decision")) and not a.get("jev_pending"):
+            continue
+        status = _schedule_openjev(a, force=False)
+        if status == "pending":
+            queued += 1
+    return queued
+
+
 def _ingest_alert(alert: dict[str, Any], *, skip_jev: bool = False) -> None:
     aid = str(alert.get("alert_id") or "")
     if not aid or aid in _ALERT_IDS:
         return
-    # OpenJev live calls are slow for bulk DB hydrate — skip there; Kafka/local still decide.
-    # Investigators can POST /api/v1/alerts/{id}/jev-decide (or use Apply in the UI).
+    # OpenJev: auto-run live in background (default). Bulk hydrate skips sync call
+    # then queues a backfill so the Investigate UI is not empty.
     if not skip_jev:
         try:
             from casino_common.jev_decision import attach_decision, jev_mode
 
             mode = jev_mode()
-            # Auto-decide new alerts with mock always; live OpenJev on explicit decide or when forced.
-            if mode in ("live", "openjev") and not os.getenv("JEV_AUTO_LIVE", "").lower() in (
-                "1",
-                "true",
-                "yes",
-            ):
-                prev = os.environ.get("JEV_MODE")
-                os.environ["JEV_MODE"] = "mock"
-                try:
-                    attach_decision(alert)
-                    if isinstance(alert.get("jev_decision"), dict):
-                        alert["jev_decision"]["note"] = "auto=mock; use Run OpenJev for live in-cluster"
-                finally:
-                    if prev is None:
-                        os.environ.pop("JEV_MODE", None)
-                    else:
-                        os.environ["JEV_MODE"] = prev
+            auto = (os.getenv("JEV_AUTO_LIVE") or "true").strip().lower()
+            auto_on = auto in ("1", "true", "yes", "on", "")
+            if mode in ("live", "openjev") and auto_on:
+                # Prefer async so Kafka / demo inject paths do not block on Verdict CPU.
+                if alert.get("jev_decision") and str(
+                    (alert.get("jev_decision") or {}).get("mode") or ""
+                ).lower() in ("openjev", "live"):
+                    pass
+                else:
+                    _schedule_openjev(alert, force=False)
             else:
                 attach_decision(alert)
         except Exception as exc:  # noqa: BLE001
@@ -793,6 +850,8 @@ def hydrate_alerts_from_db(player_ids: list[str] | None = None, since: datetime 
                 _ingest_alert(alert, skip_jev=True)
                 if len(_ALERT_IDS) > before:
                     added += 1
+        if added:
+            _backfill_openjev(limit=min(12, max(added, 4)))
         return added
     except Exception as exc:  # noqa: BLE001
         log.warning("hydrate_alerts_from_db failed: %s", exc)
@@ -1610,13 +1669,23 @@ def metrics_summary():
     )
 
     rule_hits: dict[str, int] = {}
+    rule_names: dict[str, str] = {}
     for a in ALERTS:
         for hit in a.get("rule_hits") or []:
             rid = str(hit.get("rule_id") or "").strip()
-            if rid:
-                rule_hits[rid] = rule_hits.get(rid, 0) + 1
+            if not rid:
+                continue
+            rule_hits[rid] = rule_hits.get(rid, 0) + 1
+            rname = str(hit.get("rule_name") or "").strip()
+            if rname and rid not in rule_names:
+                rule_names[rid] = rname
+    # Prefer catalog names when hits omit rule_name
+    for entry in RULE_CATALOG:
+        rid = str(entry.get("id") or "")
+        if rid and rid not in rule_names and entry.get("name"):
+            rule_names[rid] = str(entry["name"])
     rule_hit_frequency = [
-        {"rule_id": k, "count": v}
+        {"rule_id": k, "rule_name": rule_names.get(k, k), "count": v}
         for k, v in sorted(rule_hits.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
 
@@ -1801,42 +1870,66 @@ def patch_alert(alert_id: str, body: AlertPatch):
 
 
 @app.post("/api/v1/alerts/{alert_id}/jev-decide")
-def jev_decide_alert(alert_id: str, apply: bool = Query(False, description="Apply suggested status")):
-    """Run (or refresh) the Jev disposition decision layer for an alert."""
-    REQUESTS.labels(endpoint="jev_decide").inc()
-    from casino_common.jev_decision import attach_decision, jev_mode
+def jev_decide_alert(
+    alert_id: str,
+    apply: bool = Query(False, description="Apply suggested status"),
+    wait: bool = Query(False, description="Block until OpenJev finishes (may be slow)"),
+):
+    """Run (or refresh) the OpenJev disposition layer for an alert.
 
-    for a in ALERTS:
-        if a["alert_id"] != alert_id:
-            continue
-        attach_decision(a, force=True)
+    Default is async (returns quickly with ``pending``) so OpenShift edge
+    routes do not 504 while Verdict CPU runs. Pass ``wait=true`` to block.
+    """
+    REQUESTS.labels(endpoint="jev_decide").inc()
+    from casino_common.jev_decision import _needs_live_refresh, attach_decision, jev_mode
+
+    def _finish(a: dict[str, Any]) -> dict[str, Any]:
         decision = a.get("jev_decision") or {}
-        if apply and decision.get("suggested_status"):
-            a["status"] = decision["suggested_status"]
-            a["updated_at"] = datetime.now(timezone.utc).isoformat()
-            note = f"Jev disposition={decision.get('disposition')} ({decision.get('mode')})"
-            a.setdefault("notes", []).append(note)
-            ALERTS_GAUGE.set(sum(1 for x in ALERTS if x["status"] == "OPEN"))
+        if apply and not a.get("jev_pending") and decision.get("suggested_status"):
+            if str(decision.get("mode") or "").lower() not in ("pending",):
+                a["status"] = decision["suggested_status"]
+                a["updated_at"] = datetime.now(timezone.utc).isoformat()
+                note = f"Jev disposition={decision.get('disposition')} ({decision.get('mode')})"
+                a.setdefault("notes", []).append(note)
+                ALERTS_GAUGE.set(sum(1 for x in ALERTS if x["status"] == "OPEN"))
+        pending = bool(a.get("jev_pending")) or str(decision.get("mode") or "").lower() == "pending"
         return {
             "alert_id": alert_id,
             "jev_mode": jev_mode(),
-            "applied": bool(apply),
+            "applied": bool(apply) and not pending,
             "status": a.get("status"),
+            "pending": pending,
             "jev_decision": decision,
         }
-    if PIPELINE_MODE == "cdc":
+
+    target: dict[str, Any] | None = None
+    for a in ALERTS:
+        if a["alert_id"] == alert_id:
+            target = a
+            break
+    if target is None and PIPELINE_MODE == "cdc":
         hydrate_alerts_from_db()
         for a in ALERTS:
             if a["alert_id"] == alert_id:
-                attach_decision(a, force=True)
-                return {
-                    "alert_id": alert_id,
-                    "jev_mode": jev_mode(),
-                    "applied": False,
-                    "status": a.get("status"),
-                    "jev_decision": a.get("jev_decision"),
-                }
-    raise HTTPException(404, "alert not found")
+                target = a
+                break
+    if target is None:
+        raise HTTPException(404, "alert not found")
+
+    if wait:
+        attach_decision(target, force=True)
+        target["jev_pending"] = False
+    else:
+        # Force refresh when button clicked, even if a mock/fallback is present.
+        _schedule_openjev(target, force=True)
+        # Brief wait so many clicks get a finished answer within one RTT when CPU is warm.
+        deadline = time.time() + float(os.getenv("JEV_SYNC_WAIT_SEC", "12"))
+        while time.time() < deadline and target.get("jev_pending"):
+            time.sleep(0.25)
+        # If still pending but we already have an older decision, keep returning pending.
+        if target.get("jev_pending") and _needs_live_refresh(target.get("jev_decision")):
+            pass
+    return _finish(target)
 
 
 @app.get("/api/v1/jev/status")
@@ -2556,8 +2649,9 @@ def _build_investigation_network(alert: dict[str, Any]) -> dict[str, Any]:
 
     for h in alert.get("rule_hits") or []:
         rid = str(h.get("rule_id") or h.get("rule_name") or "rule")
+        rname = str(h.get("rule_name") or "").strip() or rid
         nid = f"rule:{rid}"
-        add_node(nid, "rule", f"{rid} · {h.get('rule_name') or rid}", severity=h.get("severity"), score=h.get("score"), evidence=h.get("evidence"))
+        add_node(nid, "rule", rname, severity=h.get("severity"), score=h.get("score"), evidence=h.get("evidence"))
         add_edge(f"alert:{alert_id}", nid, "triggered", detail="Rule fired on alert")
         add_edge(f"player:{player_id}", nid, "matched_rule", detail="Player matched AML rule")
 

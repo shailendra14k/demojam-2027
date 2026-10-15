@@ -111,46 +111,38 @@ def build_state(alert: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _aml_questions() -> dict[str, Any]:
-    """Typed questions matching the FINS / TypeSafe AML triage pattern."""
+def _aml_questions(state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Fast System One questions for in-cluster Verdict CPU (~5–15s).
+
+    Full multi-noul rubrics take 60–90s on CPU and trip OpenShift route timeouts.
+    Verdict often returns near-uniform probs; we still call it, then reconcile
+    with AML policy heuristics so escalate / need_info / close stay justified.
+    """
+    rules = ", ".join((state or {}).get("rule_ids") or []) or "none"
+    score = (state or {}).get("detection_score")
+    level = (state or {}).get("pipeline_risk_level") or "UNKNOWN"
+    hint = (
+        f"Alert context: pipeline_risk={level}, detection_score={score}, "
+        f"matched_rules=[{rules}]. "
+        "escalate for watchlist/PEP/CTR/structuring/rapid cash-out/critical risk; "
+        "need_info for medium or incomplete evidence; "
+        "close ONLY when risk is LOW, score is low, and there are no AML rule hits."
+    )
     return {
-        "structuring": {
-            "type": "noul",
-            "instructions": "This alert shows structuring or smurfing (multiple cash moves just under CTR).",
-        },
-        "rapid_pass_through": {
-            "type": "noul",
-            "instructions": "Funds move in and out quickly with little genuine play (rapid withdrawal / wire / minimal gaming).",
-        },
-        "shell_or_shared": {
-            "type": "noul",
-            "instructions": "Shared devices, multi-instrument, or shell-like account indicators are present.",
-        },
-        "watchlist_or_ctr": {
-            "type": "noul",
-            "instructions": "Watchlist/PEP hit or clear CTR cash threshold breach.",
-        },
-        "purpose_mismatch": {
-            "type": "noul",
-            "instructions": "Activity does not match expected gaming purpose (behavioral spike or deposit-then-exit).",
-        },
-        "risk_level": {
-            "type": "score",
-            "instructions": "Overall investigator risk for this alert",
-            "criteria": [
-                "Low — benign or weak evidence",
-                "Medium — investigate further",
-                "High — strong typology match",
-                "Critical — watchlist/CTR or severe layering",
-            ],
-        },
         "disposition": {
             "type": "choice",
-            "instructions": "Recommended case disposition for the investigator",
+            "instructions": hint,
             "criteria": {
-                "escalate": "File / escalate to compliance (SAR path)",
-                "need_info": "Keep open; gather more evidence",
-                "close": "Close as not suspicious or false positive",
+                "escalate": (
+                    "Escalate to compliance / SAR path — watchlist, PEP, sanctions, "
+                    "CTR breach, structuring/smurfing, rapid withdrawal/wire, or critical risk"
+                ),
+                "need_info": (
+                    "Keep investigating — medium risk, behavioral anomaly, or incomplete evidence"
+                ),
+                "close": (
+                    "Close as not suspicious — ONLY low score, LOW pipeline risk, and no rule hits"
+                ),
             },
         },
     }
@@ -180,6 +172,17 @@ def _mock_decide(state: dict[str, Any]) -> dict[str, Any]:
     red_flag_count = sum(
         1 for v in (structuring, rapid, shell, watchlist, purpose) if v >= 0.55
     )
+    active_flags = [
+        name
+        for name, val in (
+            ("structuring/smurfing", structuring),
+            ("rapid pass-through", rapid),
+            ("shared/shell device", shell),
+            ("watchlist/CTR", watchlist),
+            ("purpose mismatch", purpose),
+        )
+        if val >= 0.55
+    ]
     # Escalate on watchlist/CTR, critical pipeline, or a clear typology + elevated score.
     if (
         watchlist >= 0.7
@@ -189,12 +192,25 @@ def _mock_decide(state: dict[str, Any]) -> dict[str, Any]:
     ):
         disposition = "escalate"
         conf = 0.86
-    elif score < 0.4 and red_flag_count == 0:
+        why = (
+            f"Escalate: {', '.join(active_flags) or 'elevated typology'} with "
+            f"pipeline={pipeline_level} score={score:.2f}"
+        )
+    elif score < 0.4 and red_flag_count == 0 and risk_idx <= 0:
         disposition = "close"
         conf = 0.75
+        why = (
+            f"Close: no AML rule red-flags, pipeline={pipeline_level}, "
+            f"score={score:.2f} looks benign"
+        )
     else:
         disposition = "need_info"
         conf = 0.7
+        why = (
+            f"Need info: evidence incomplete or medium risk "
+            f"(flags={', '.join(active_flags) or 'none'}, "
+            f"pipeline={pipeline_level}, score={score:.2f})"
+        )
 
     legend = ["Low", "Medium", "High", "Critical"]
     return {
@@ -218,10 +234,8 @@ def _mock_decide(state: dict[str, Any]) -> dict[str, Any]:
         "disposition": disposition,
         "disposition_confidence": conf,
         "suggested_status": DISPOSITION_TO_STATUS[disposition],
-        "rationale": (
-            f"Jev mock: {red_flag_count} red-flag(s), pipeline={pipeline_level}, "
-            f"score={score:.2f} → {disposition}"
-        ),
+        "rationale": why,
+        "policy_applied": True,
     }
 
 
@@ -282,10 +296,106 @@ def _parse_live_answers(raw: dict[str, Any], state: dict[str, Any]) -> dict[str,
     }
 
 
+def _needs_live_refresh(decision: Any) -> bool:
+    """True when decision is missing, provisional, or a pre-policy OpenJev close."""
+    if not isinstance(decision, dict) or not decision:
+        return True
+    mode = str(decision.get("mode") or "").lower()
+    if mode in ("", "mock", "mock_fallback", "pending"):
+        return True
+    # Re-decide old Verdict-only closes that lacked AML policy reconciliation.
+    if not decision.get("policy_applied"):
+        return True
+    conf = float(decision.get("disposition_confidence") or 0)
+    if mode == "openjev" and conf < 0.15:
+        return True
+    return False
+
+
+def _prob_margin(probs: dict[str, Any] | None) -> float:
+    if not probs:
+        return 0.0
+    vals = sorted((float(v) for v in probs.values()), reverse=True)
+    if not vals:
+        return 0.0
+    if len(vals) == 1:
+        return vals[0]
+    return vals[0] - vals[1]
+
+
+def _reconcile_disposition(
+    live: dict[str, Any],
+    heuristic: dict[str, Any],
+    *,
+    raw_disp: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Blend OpenJev output with AML policy so dispositions stay justified.
+
+    In-cluster Verdict often returns near-uniform probs biased to ``close``
+    (confidence ~0.02). When the model is weak or unsafe, keep OpenJev
+    telemetry but apply heuristic escalate / need_info / close policy.
+    """
+    out = dict(live)
+    h_disp = str(heuristic.get("disposition") or "need_info").lower()
+    l_disp = str(live.get("disposition") or "need_info").lower()
+    conf = float(live.get("disposition_confidence") or 0)
+    probs = {}
+    if isinstance(raw_disp, dict):
+        probs = {str(k): float(v) for k, v in (raw_disp.get("probabilities") or {}).items()}
+    margin = _prob_margin(probs)
+
+    min_conf = float(os.getenv("JEV_TRUST_MIN_CONF", "0.25"))
+    min_margin = float(os.getenv("JEV_TRUST_MIN_MARGIN", "0.12"))
+    trust_live = (
+        conf >= min_conf
+        and margin >= min_margin
+        and l_disp in DISPOSITION_TO_STATUS
+        # Verdict is biased to "close"; never accept close unless policy also says close.
+        and not (l_disp == "close" and h_disp != "close")
+    )
+
+    out["red_flags"] = heuristic.get("red_flags") or out.get("red_flags")
+    out["risk_level"] = heuristic.get("risk_level") or out.get("risk_level")
+    out["risk_score_index"] = heuristic.get("risk_score_index", out.get("risk_score_index"))
+    out["openjev_raw"] = {
+        "disposition": l_disp,
+        "confidence": conf,
+        "probabilities": probs or None,
+    }
+    out["policy_applied"] = True
+    out["provider"] = "openjev"
+
+    if trust_live:
+        out["mode"] = "openjev"
+        out["disposition"] = l_disp
+        out["disposition_confidence"] = round(conf, 4)
+        out["suggested_status"] = DISPOSITION_TO_STATUS[l_disp]
+        out["rationale"] = (
+            f"OpenJev chose {l_disp} (conf={conf:.2f}, margin={margin:.2f}). "
+            f"Policy check agrees with pipeline={heuristic.get('risk_level')}."
+        )
+        return out
+
+    # Policy wins — still surface that OpenJev was consulted.
+    out["mode"] = "hybrid"
+    out["disposition"] = h_disp
+    out["disposition_confidence"] = float(heuristic.get("disposition_confidence") or 0.7)
+    out["suggested_status"] = DISPOSITION_TO_STATUS[h_disp]
+    out["model"] = f"{out.get('model') or openjev_model()}+policy"
+    out["rationale"] = (
+        f"{heuristic.get('rationale')}. "
+        f"OpenJev raw={l_disp} (conf={conf:.2f}, margin={margin:.2f}) was too weak / unsafe; "
+        f"applied AML disposition policy."
+    )
+    return out
+
+
 def _live_decide(state: dict[str, Any]) -> dict[str, Any]:
-    """Call OpenJev (or any System One–compatible server)."""
+    """Call OpenJev (or any System One–compatible server), then apply AML policy."""
     base = openjev_base_url()
     api_key = _api_key()
+    # Heuristic red flags + disposition policy stay local for a justified triage.
+    heuristic = _mock_decide(state)
     # In-cluster OpenJev accepts a placeholder bearer; Codiv requires sk-codiv-…
     if not api_key:
         if _is_local_openjev(base):
@@ -294,7 +404,7 @@ def _live_decide(state: dict[str, Any]) -> dict[str, Any]:
             log.warning(
                 "JEV_MODE=live but no API key (set TYPESAFE_API_KEY / CODIV_API_KEY) — falling back to mock"
             )
-            out = _mock_decide(state)
+            out = dict(heuristic)
             out["mode"] = "mock_fallback"
             out["rationale"] = "OpenJev API key missing; " + out["rationale"]
             return out
@@ -308,27 +418,33 @@ def _live_decide(state: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "model": model,
         "state": state,
-        "questions": _aml_questions(),
+        "questions": _aml_questions(state),
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    # Verdict CPU is ~5–15s for disposition-only; keep headroom under route limits.
+    timeout = float(os.getenv("JEV_TIMEOUT_SEC", "60"))
 
     try:
         import httpx
 
-        with httpx.Client(timeout=float(os.getenv("JEV_TIMEOUT_SEC", "45"))) as client:
+        with httpx.Client(timeout=timeout) as client:
             resp = client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
+        answers = data.get("answers") if isinstance(data, dict) else {}
         out = _parse_live_answers(data if isinstance(data, dict) else {}, state)
+        raw_disp = answers.get("disposition") if isinstance(answers, dict) else None
         out["endpoint"] = base
         out["model"] = model
-        return out
+        return _reconcile_disposition(
+            out, heuristic, raw_disp=raw_disp if isinstance(raw_disp, dict) else None
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("OpenJev call failed (%s); using mock", exc)
-        out = _mock_decide(state)
+        out = dict(heuristic)
         out["mode"] = "mock_fallback"
         out["rationale"] = f"openjev error: {exc}; " + out["rationale"]
         return out
@@ -339,8 +455,12 @@ def decide_alert(alert: dict[str, Any], *, force: bool = False) -> dict[str, Any
     mode = jev_mode()
     if mode in ("off", "disabled", "false", "0"):
         return None
-    if alert.get("jev_decision") and not force:
-        return alert["jev_decision"]
+    existing = alert.get("jev_decision")
+    if existing and not force and not _needs_live_refresh(existing):
+        return existing
+    # force / mock / pending → refresh when live is configured
+    if existing and not force and mode not in ("live", "openjev"):
+        return existing
 
     state = build_state(alert)
     if mode in ("live", "openjev"):

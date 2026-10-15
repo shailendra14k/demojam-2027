@@ -387,6 +387,9 @@ deploy_openjev() {
     \"data\": {
       \"JEV_MODE\": \"live\",
       \"JEV_MODEL\": \"verdict-1.4\",
+      \"JEV_AUTO_LIVE\": \"true\",
+      \"JEV_TIMEOUT_SEC\": \"60\",
+      \"JEV_SYNC_WAIT_SEC\": \"12\",
       \"OPENJEV_BASE_URL\": \"${base}\",
       \"TYPESAFE_BASE_URL\": \"${base}\"
     }

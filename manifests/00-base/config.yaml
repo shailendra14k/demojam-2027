@@ -35,6 +35,9 @@ data:
   JEV_MODEL: verdict-1.4
   OPENJEV_BASE_URL: http://openjev:8080
   TYPESAFE_BASE_URL: http://openjev:8080
+  JEV_AUTO_LIVE: "true"
+  JEV_TIMEOUT_SEC: "60"
+  JEV_SYNC_WAIT_SEC: "12"
   # Placeholder key for in-cluster; override via Secret typesafe-jev if needed
   FEATURES_TOPIC: aml.features
   ENRICHED_TOPIC: casino.events.enriched

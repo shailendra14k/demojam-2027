@@ -11,20 +11,18 @@ export default function Rules() {
   return (
     <section>
       <h2>Rules catalog</h2>
-      <p className="muted">AML-001…015 — ours plus cage/BSA rules from demojam. Thresholds are env-configurable.</p>
+      <p className="muted">Catalog of AML detection rules. Thresholds are env-configurable.</p>
       <table className="table">
         <thead>
           <tr>
-            <th>ID</th>
             <th>Name</th>
             <th>Severity</th>
           </tr>
         </thead>
         <tbody>
           {items.map((r) => (
-            <tr key={r.id}>
-              <td className="mono">{r.id}</td>
-              <td>{r.name}</td>
+            <tr key={r.id || r.name}>
+              <td>{r.name || r.id}</td>
               <td>{r.severity}</td>
             </tr>
           ))}
