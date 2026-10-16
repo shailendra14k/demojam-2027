@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
 # Build Casino Sentinel images (linux/amd64) and push to Quay.
-# Tag defaults to the short git commit of demojam-2027/ (override with TAG= or --tag).
+# Tag defaults to latest (same as deploy.sh). Override with TAG= or --tag.
 #
 # Prerequisites: podman or docker, logged into Quay
 #   podman login quay.io
 #
 # Usage:
-#   ./scripts/build-push-images.sh              # python + ui only (does NOT build TFM)
+#   ./scripts/build-push-images.sh              # python + ui → :latest (does NOT build TFM)
 #   ./scripts/build-push-images.sh --python-only
 #   ./scripts/build-push-images.sh --ui-only
-#   ./scripts/build-push-images.sh --tfm        # also casino-tfm-embed (opt-in; NeMo + weights)
-#   ./scripts/build-push-images.sh --tfm-only   # only casino-tfm-embed
-#   TAG=latest ./scripts/build-push-images.sh --tfm-only
+#   ./scripts/build-push-images.sh --tfm        # also casino-tfm-embed:latest (opt-in)
+#   ./scripts/build-push-images.sh --tfm-only   # only casino-tfm-embed:latest
+#   TAG=v1.2 ./scripts/build-push-images.sh
 #   REGISTRY=quay.io/myorg ./scripts/build-push-images.sh
 #
 # TFM sources: model/decoder-foundation-model/{Containerfile,serve_embeddings.py,weights}
-# (gitignored). Deploy --rhoai defaults to casino-tfm-embed:latest.
+# (gitignored).
 #
 # Then deploy:
-#   ./deploy.sh --env ./.env --insecure
-#   ./deploy.sh --env ./.env --insecure --rhoai
+#   ./deploy.sh --token=TOKEN --server=URL
 
 set -euo pipefail
 
@@ -27,19 +26,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REGISTRY="${REGISTRY:-quay.io/shailendra14k}"
 PLATFORM="${PLATFORM:-linux/amd64}"
+TAG="${TAG:-latest}"
 BUILD_PYTHON=true
 BUILD_UI=true
 BUILD_TFM=false
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '==> %s\n' "$*"; }
-
-short_commit() {
-  git -C "${ROOT}" rev-parse --short HEAD 2>/dev/null \
-    || die "Cannot resolve short commit (run from a git checkout of demojam-2027)"
-}
-
-TAG="${TAG:-$(short_commit)}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -105,13 +98,5 @@ echo "Pushed (tag=${TAG}):"
 [[ "${BUILD_UI}" == true ]] && echo "  ${UI_IMAGE}"
 [[ "${BUILD_TFM}" == true ]] && echo "  ${TFM_IMAGE}"
 echo
-echo "Deploy with the same commit (deploy.sh defaults to this short SHA):"
-echo "  ./deploy.sh --env ./.env --insecure"
-if [[ "${BUILD_TFM}" == true ]]; then
-  echo "  ./deploy.sh --env ./.env --insecure --rhoai"
-  echo "Or pin TFM image:"
-  echo "  SENTINEL_TFM_IMAGE=${TFM_IMAGE} ./deploy.sh --env ./.env --insecure --rhoai"
-fi
-echo "Or pin app images:"
-echo "  SENTINEL_PYTHON_IMAGE=${PYTHON_IMAGE} SENTINEL_UI_IMAGE=${UI_IMAGE} \\"
-echo "    ./deploy.sh --env ./.env --insecure"
+echo "Deploy (defaults: insecure + operators + TFM, images :latest):"
+echo "  ./deploy.sh --token=TOKEN --server=URL"

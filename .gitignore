@@ -1,8 +1,7 @@
-# Secrets / local env (keep env.example tracked)
+# Secrets / local env (no env.example — use --token= / --server=)
 env
 .env
 .env.*
-!.env.example
 
 # Python
 *.pyc
@@ -25,7 +24,7 @@ dist/
 .ipynb_checkpoints/
 
 # NVIDIA TFM checkpoint + local Containerfile / serve_embeddings.py (~55MB weights).
-# Not committed — bake with: TAG=latest ./scripts/build-push-images.sh --tfm
+# Not committed — bake with: ./scripts/build-push-images.sh --tfm → :latest
 # Deploy --rhoai defaults to quay.io/shailendra14k/casino-tfm-embed:latest
 model/decoder-foundation-model/
 

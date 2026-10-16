@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Deploy Casino Sentinel (Casino Guard AML demo) to OpenShift.
-# Usage:
-#   ./deploy.sh --api https://api.cluster:6443 --token sha256~...
-#   ./deploy.sh --env ./.env
+# Demo default (= old: --env ./.env --insecure --rhoai --install-operators):
+#   ./deploy.sh --token=sha256~... --server=https://api...:6443
 
 set -euo pipefail
 
@@ -13,75 +12,53 @@ OCP_API="${OCP_API:-}"
 OCP_TOKEN="${OCP_TOKEN:-}"
 NAMESPACE="${NAMESPACE:-casino-sentinel}"
 CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-}"
-INSECURE="${INSECURE:-false}"
-SKIP_OPERATORS=true
+# Demo defaults: insecure TLS, install operators, deploy TFM (--rhoai).
+INSECURE="${INSECURE:-true}"
+SKIP_OPERATORS=false
 SKIP_CONSOLE=false
-DEPLOY_RHOAI=false
+DEPLOY_RHOAI=true
 DRY_RUN=false
 ENV_FILE=""
-# App images: Quay tags = short git commit (override via env / .env).
+# App images: Quay tags default to :latest.
 REGISTRY="${REGISTRY:-quay.io/shailendra14k}"
 
 log()  { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 ok()   { printf '  OK  %s\n' "$*"; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-short_commit() {
-  git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null \
-    || die "Cannot resolve short commit (need a git checkout of demojam-2027)"
-}
-
-# Resolve Quay image refs after --env is sourced. Manifests use __SENTINEL_*_IMAGE__.
+# Resolve Quay image refs. Manifests use __SENTINEL_*_IMAGE__.
 resolve_app_images() {
-  local tag
-  tag="$(short_commit)"
-  PYTHON_IMAGE_REF="${SENTINEL_PYTHON_IMAGE:-${REGISTRY}/sentinel-python:${tag}}"
-  UI_IMAGE_REF="${SENTINEL_UI_IMAGE:-${REGISTRY}/sentinel-ui:${tag}}"
-  # TFM defaults to :latest (opt-in rebuild via ./scripts/build-push-images.sh --tfm).
+  PYTHON_IMAGE_REF="${SENTINEL_PYTHON_IMAGE:-${REGISTRY}/sentinel-python:latest}"
+  UI_IMAGE_REF="${SENTINEL_UI_IMAGE:-${REGISTRY}/sentinel-ui:latest}"
   TFM_IMAGE_REF="${SENTINEL_TFM_IMAGE:-${REGISTRY}/casino-tfm-embed:latest}"
 }
 
 usage() {
   cat <<'EOF'
-Deploy Casino Sentinel (PostgreSQL + AMQ Streams + Streams Console + Debezium + AML pipeline + Casino Guard UI).
+Deploy Casino Sentinel (demo default: insecure + install operators + OpenShift AI TFM).
 
 Required:
-  --api URL            OpenShift API server
-  --token TOKEN        oc token (oc whoami -t)
-  --env FILE           Load OCP_API / OCP_TOKEN / NAMESPACE from a file
+  --token=TOKEN         oc token (oc whoami -t)
+  --server=URL          OpenShift API server
+
+Aliases: --token TOKEN / --ocp_token=TOKEN
+         --server URL / --ocp_api=URL / --api URL
+
+Example (full demo stack):
+  ./deploy.sh --token=sha256~... --server=https://api.cluster:6443
 
 Optional:
-  --namespace NAME     Project (default: casino-sentinel)
-  --insecure           Skip TLS verify
-  --install-operators  Install AMQ Streams + Streams Console operators via OLM
-  --skip-console       Do not deploy Streams Console
-  --rhoai              Deploy TFM on OpenShift AI (ServingRuntime + InferenceService)
-  --dry-run            Print commands only
+  --namespace NAME      Project (default: casino-sentinel)
+  --skip-operators      Do not install AMQ Streams / Console operators
+  --skip-console        Do not deploy Streams Console
+  --no-rhoai            Skip TFM InferenceService (CPU hashed / AI_MODE=mock)
+  --secure              Require API TLS verify (default is --insecure)
+  --env FILE            Optional: load vars from a file (not required for demo)
+  --dry-run             Print commands only
   -h, --help
 
-.env (from env.example) only needs OCP_API, OCP_TOKEN, NAMESPACE, INSECURE.
-  TFM knobs are NOT set in .env — deploy.sh + casino-config defaults apply them.
-
-App images (no in-cluster sentinel-python / sentinel-ui builds):
-  ./scripts/build-push-images.sh          # → quay.io/shailendra14k/sentinel-{python,ui}:<short-sha>
-  ./deploy.sh --env ./.env --insecure     # pulls the same short-sha tags
-  Override: SENTINEL_PYTHON_IMAGE=... SENTINEL_UI_IMAGE=...
-
-Default (./deploy.sh --env ./.env --insecure):
-  PostgreSQL + AMQ Streams + Streams Console + Debezium + AML pipeline + UI.
-  TFM_MODE=hashed / AI_MODE=mock on casino-config.
-
-With --rhoai (OpenShift AI KServe + 1 GPU):
-  Default image: quay.io/shailendra14k/casino-tfm-embed:latest (no PVC).
-  Rebuild (opt-in): TAG=latest ./scripts/build-push-images.sh --tfm
-    (sources live under model/decoder-foundation-model/ — gitignored).
-  Override: SENTINEL_TFM_IMAGE=...
-  Waits for DSC kserve=Managed + ServingRuntime/InferenceService CRDs (RHOAI_WAIT_TIMEOUT).
-  Auto-enables KServe on DSC if needed (disable with RHOAI_ENABLE_KSERVE=false).
-  First frees the single GPU (stops other InferenceServices e.g. llama-32-3b-instruct,
-  scales down other nvidia.com/gpu Deployments). Set SKIP_FREE_GPU=true to skip.
-  Applies manifests/08-openshift-ai/* (no NGC_API_KEY), sets TFM_MODE=http + AI_MODE=nvidia.
-  See ../nvidia-tfm/OCP-1GPU.md
+Defaults pull Quay :latest images (sentinel-python, sentinel-ui, casino-tfm-embed).
+Override: SENTINEL_PYTHON_IMAGE=... SENTINEL_UI_IMAGE=... SENTINEL_TFM_IMAGE=...
 EOF
 }
 
@@ -112,16 +89,16 @@ apply_apps() {
 }
 
 login() {
-  [[ -n "${OCP_API}" ]]   || die "OpenShift API URL is required (--api or OCP_API)."
-  [[ -n "${OCP_TOKEN}" ]] || die "OpenShift token is required (--token or OCP_TOKEN)."
+  [[ -n "${OCP_API}" ]]   || die "OpenShift API URL is required (--server= or OCP_API)."
+  [[ -n "${OCP_TOKEN}" ]] || die "OpenShift token is required (--token= or OCP_TOKEN)."
   log "Logging in to ${OCP_API}"
   if [[ "${DRY_RUN}" == true ]]; then
     return 0
   fi
   if [[ "${INSECURE}" == true || "${INSECURE}" == "true" ]]; then
-    oc login --server="${OCP_API}" --token="${OCP_TOKEN}" --insecure-skip-tls-verify=true >/dev/null
+    oc login --token="${OCP_TOKEN}" --server="${OCP_API}" --insecure-skip-tls-verify=true >/dev/null
   else
-    oc login --server="${OCP_API}" --token="${OCP_TOKEN}" >/dev/null
+    oc login --token="${OCP_TOKEN}" --server="${OCP_API}" >/dev/null
   fi
   ok "Logged in as $(oc whoami)"
 }
@@ -444,7 +421,7 @@ ensure_rhoai_kserve() {
   oc get crd servingruntimes.serving.kserve.io inferenceservices.serving.kserve.io
   oc get dsc ${dsc} -o yaml | grep -A8 kserve
   oc get pods -n redhat-ods-operator
-  Increase wait: RHOAI_WAIT_TIMEOUT=900 ./deploy.sh --env ./.env --insecure --rhoai"
+  Increase wait: RHOAI_WAIT_TIMEOUT=900 ./deploy.sh --token=... --server=..."
 }
 
 deploy_rhoai() {
@@ -543,8 +520,9 @@ print_summary() {
   echo "Demo: open the UI → Demo Controls / Start Scenario (structuring / rapid-wire / mixed)"
 }
 
-# Load --env first
-_pre=("${@}")
+# Optional --env FILE first (advanced); demo path uses --server / --token only.
+_pre=()
+(($#)) && _pre=("$@")
 for ((i=0; i<${#_pre[@]}; i++)); do
   if [[ "${_pre[$i]}" == "--env" ]]; then
     ENV_FILE="${_pre[$((i+1))]}"
@@ -559,20 +537,29 @@ done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --api)                OCP_API="$2"; shift 2 ;;
-    --token)              OCP_TOKEN="$2"; shift 2 ;;
+    --server=*)           OCP_API="${1#*=}"; shift ;;
+    --token=*)            OCP_TOKEN="${1#*=}"; shift ;;
+    --ocp_api=*)          OCP_API="${1#*=}"; shift ;;
+    --ocp_token=*)        OCP_TOKEN="${1#*=}"; shift ;;
+    --server|--ocp_api|--api)     OCP_API="$2"; shift 2 ;;
+    --token|--ocp_token)          OCP_TOKEN="$2"; shift 2 ;;
     --namespace)          NAMESPACE="$2"; shift 2 ;;
     --env)                ENV_FILE="$2"; shift 2 ;;
     --insecure)           INSECURE=true; shift ;;
+    --secure)             INSECURE=false; shift ;;
     --skip-operators)     SKIP_OPERATORS=true; shift ;;
     --install-operators)  SKIP_OPERATORS=false; shift ;;
     --skip-console)       SKIP_CONSOLE=true; shift ;;
     --rhoai)              DEPLOY_RHOAI=true; shift ;;
+    --no-rhoai)           DEPLOY_RHOAI=false; shift ;;
     --dry-run)            DRY_RUN=true; shift ;;
     -h|--help)            usage; exit 0 ;;
     *)                    die "Unknown argument: $1" ;;
   esac
 done
+
+[[ -n "${OCP_API}" ]]   || die "Missing --server=URL (required). See --help"
+[[ -n "${OCP_TOKEN}" ]] || die "Missing --token=TOKEN (required). See --help"
 
 need_oc
 login

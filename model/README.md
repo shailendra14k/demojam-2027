@@ -20,7 +20,7 @@ TFM embedding image (GPU / ``--rhoai``): sources live under
 ``decoder-foundation-model/`` (gitignored — Containerfile, serve_embeddings.py, weights).
 Default deploy image is ``quay.io/shailendra14k/casino-tfm-embed:latest``.
 Rebuild (opt-in; not part of default ``build-push-images.sh``):
-``TAG=latest ../scripts/build-push-images.sh --tfm``.
+``../scripts/build-push-images.sh --tfm`` → ``:latest``.
 
 | File | Role |
 |---|---|
