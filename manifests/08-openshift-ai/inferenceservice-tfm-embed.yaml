@@ -1,5 +1,5 @@
-# OpenShift AI InferenceService — TFM embeddings on NeMo (KServe RawDeployment).
-# Pairs with ServingRuntime casino-tfm-nemo in this directory.
+# OpenShift AI InferenceService — TFM embeddings (KServe RawDeployment).
+# Pairs with ServingRuntime casino-tfm-nemo (image has script + weights).
 #
 # After Ready, point Casino AML at the predictor:
 #   TFM_MODE=http
@@ -31,13 +31,12 @@ spec:
   predictor:
     minReplicas: 1
     maxReplicas: 1
-    # NeMo image is on public Quay — no ngc-secret / NGC_API_KEY required.
+    # casino-tfm-embed is on public Quay — no ngc-secret / NGC_API_KEY required.
     model:
       modelFormat:
         name: casino-tfm
       runtime: casino-tfm-nemo
-      # PVC loaded by deploy.sh --rhoai from model/decoder-foundation-model/
-      storageUri: pvc://tfm-checkpoint/
+      # Checkpoint lives in the runtime image (/opt/tfm/decoder-foundation-model)
       resources:
         requests:
           cpu: "2"
@@ -47,14 +46,6 @@ spec:
           cpu: "4"
           memory: 32Gi
           nvidia.com/gpu: "1"
-      volumeMounts:
-        - name: script
-          mountPath: /opt/tfm/serve_embeddings.py
-          subPath: serve_embeddings.py
-    volumes:
-      - name: script
-        configMap:
-          name: tfm-embed-script
     tolerations:
       - effect: NoSchedule
         key: nvidia.com/gpu

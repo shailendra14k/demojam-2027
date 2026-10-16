@@ -1,10 +1,9 @@
-# Prerequisites (or use ./deploy.sh --rhoai which does these):
+# Prerequisites (or use ./deploy.sh --rhoai):
 #   - OpenShift AI single-model serving (KServe) enabled
-#   - PVC tfm-checkpoint with decoder-foundation-model/ (from model/ via deploy.sh)
-#   - ConfigMap tfm-embed-script from model/serve_embeddings.py
-# NeMo image: public Quay mirror of nvcr.io/nvidia/nemo:25.09.01
-#   quay.io/shailendra14k/nemo:25.09.01  (no NGC_API_KEY / ngc-secret required)
-# Laptop: ../nvidia-tfm/clone-nvidia-tfm.sh → model/decoder-foundation-model/
+#   - Default image quay.io/shailendra14k/casino-tfm-embed:latest
+#     Rebuild opt-in: TAG=latest ./scripts/build-push-images.sh --tfm
+#     (sources: model/decoder-foundation-model/ — gitignored)
+# deploy.sh substitutes __SENTINEL_TFM_IMAGE__.
 # Docs: ../nvidia-tfm/OCP-1GPU.md
 #
 # Dashboard (Models → Deployments) needs template-* annotations below;
@@ -37,15 +36,15 @@ spec:
       autoSelect: true
   containers:
     - name: kserve-container
-      image: quay.io/shailendra14k/nemo:25.09.01
+      image: __SENTINEL_TFM_IMAGE__
       imagePullPolicy: IfNotPresent
-      command: ["python", "/opt/tfm/serve_embeddings.py"]
+      command: ["python", "/opt/tfm/decoder-foundation-model/serve_embeddings.py"]
       env:
         - name: PORT
           value: "8080"
-        # KServe mounts storageUri (pvc://tfm-checkpoint/) at /mnt/models
+        # Weights + script baked into casino-tfm-embed under decoder-foundation-model/
         - name: TFM_CHECKPOINT
-          value: /mnt/models/decoder-foundation-model
+          value: /opt/tfm/decoder-foundation-model
         - name: TFM_PAD_ID
           value: "0"
       ports:
@@ -63,11 +62,3 @@ spec:
           port: 8080
         initialDelaySeconds: 60
         periodSeconds: 20
-      volumeMounts:
-        - name: script
-          mountPath: /opt/tfm/serve_embeddings.py
-          subPath: serve_embeddings.py
-  volumes:
-    - name: script
-      configMap:
-        name: tfm-embed-script

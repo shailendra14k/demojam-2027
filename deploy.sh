@@ -16,14 +16,30 @@ CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-}"
 INSECURE="${INSECURE:-false}"
 SKIP_OPERATORS=true
 SKIP_CONSOLE=false
-SKIP_BUILDS=false
 DEPLOY_RHOAI=false
 DRY_RUN=false
 ENV_FILE=""
+# App images: Quay tags = short git commit (override via env / .env).
+REGISTRY="${REGISTRY:-quay.io/shailendra14k}"
 
 log()  { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 ok()   { printf '  OK  %s\n' "$*"; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+short_commit() {
+  git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null \
+    || die "Cannot resolve short commit (need a git checkout of demojam-2027)"
+}
+
+# Resolve Quay image refs after --env is sourced. Manifests use __SENTINEL_*_IMAGE__.
+resolve_app_images() {
+  local tag
+  tag="$(short_commit)"
+  PYTHON_IMAGE_REF="${SENTINEL_PYTHON_IMAGE:-${REGISTRY}/sentinel-python:${tag}}"
+  UI_IMAGE_REF="${SENTINEL_UI_IMAGE:-${REGISTRY}/sentinel-ui:${tag}}"
+  # TFM defaults to :latest (opt-in rebuild via ./scripts/build-push-images.sh --tfm).
+  TFM_IMAGE_REF="${SENTINEL_TFM_IMAGE:-${REGISTRY}/casino-tfm-embed:latest}"
+}
 
 usage() {
   cat <<'EOF'
@@ -39,7 +55,6 @@ Optional:
   --insecure           Skip TLS verify
   --install-operators  Install AMQ Streams + Streams Console operators via OLM
   --skip-console       Do not deploy Streams Console
-  --skip-builds        Reuse existing ImageStream tags
   --rhoai              Deploy TFM on OpenShift AI (ServingRuntime + InferenceService)
   --dry-run            Print commands only
   -h, --help
@@ -47,21 +62,25 @@ Optional:
 .env (from env.example) only needs OCP_API, OCP_TOKEN, NAMESPACE, INSECURE.
   TFM knobs are NOT set in .env — deploy.sh + casino-config defaults apply them.
 
+App images (no in-cluster sentinel-python / sentinel-ui builds):
+  ./scripts/build-push-images.sh          # → quay.io/shailendra14k/sentinel-{python,ui}:<short-sha>
+  ./deploy.sh --env ./.env --insecure     # pulls the same short-sha tags
+  Override: SENTINEL_PYTHON_IMAGE=... SENTINEL_UI_IMAGE=...
+
 Default (./deploy.sh --env ./.env --insecure):
-  PostgreSQL + AMQ Streams + Streams Console + Debezium + microservice AML pipeline + UI.
-  XGBoost scores in sentinel-ml-engine from joblib (no OpenShift AI).
+  PostgreSQL + AMQ Streams + Streams Console + Debezium + AML pipeline + UI.
   TFM_MODE=hashed / AI_MODE=mock on casino-config.
 
 With --rhoai (OpenShift AI KServe + 1 GPU):
-  Prerequisite: ../nvidia-tfm/clone-nvidia-tfm.sh  → model/decoder-foundation-model/
+  Default image: quay.io/shailendra14k/casino-tfm-embed:latest (no PVC).
+  Rebuild (opt-in): TAG=latest ./scripts/build-push-images.sh --tfm
+    (sources live under model/decoder-foundation-model/ — gitignored).
+  Override: SENTINEL_TFM_IMAGE=...
   Waits for DSC kserve=Managed + ServingRuntime/InferenceService CRDs (RHOAI_WAIT_TIMEOUT).
   Auto-enables KServe on DSC if needed (disable with RHOAI_ENABLE_KSERVE=false).
   First frees the single GPU (stops other InferenceServices e.g. llama-32-3b-instruct,
   scales down other nvidia.com/gpu Deployments). Set SKIP_FREE_GPU=true to skip.
-  Creates PVC tfm-checkpoint + loads weights,
-  ConfigMap tfm-embed-script from model/serve_embeddings.py,
-  applies manifests/08-openshift-ai/* (NeMo from quay.io/shailendra14k/nemo:25.09.01 —
-  no NGC_API_KEY), sets TFM_MODE=http + AI_MODE=nvidia on casino-config.
+  Applies manifests/08-openshift-ai/* (no NGC_API_KEY), sets TFM_MODE=http + AI_MODE=nvidia.
   See ../nvidia-tfm/OCP-1GPU.md
 EOF
 }
@@ -77,6 +96,19 @@ apply() {
     return 0
   fi
   oc apply -f "${file}"
+}
+
+apply_apps() {
+  resolve_app_images
+  log "App images: python=${PYTHON_IMAGE_REF}  ui=${UI_IMAGE_REF}"
+  if [[ "${DRY_RUN}" == true ]]; then
+    echo "DRY-RUN apply apps"
+    return 0
+  fi
+  sed -e "s|__SENTINEL_PYTHON_IMAGE__|${PYTHON_IMAGE_REF}|g" \
+    "${MANIFESTS}/06-apps/services.yaml" | oc apply -f -
+  sed -e "s|__SENTINEL_UI_IMAGE__|${UI_IMAGE_REF}|g" \
+    "${MANIFESTS}/06-apps/ui.yaml" | oc apply -f -
 }
 
 login() {
@@ -225,8 +257,8 @@ deploy_console() {
   ok "Console URL: https://sentinel-console.${CLUSTER_DOMAIN}"
 }
 
-# OpenShift AI TFM: PVC + Quay NeMo ServingRuntime + InferenceService (no NGC key).
-# Laptop pre-req: ../nvidia-tfm/clone-nvidia-tfm.sh → model/decoder-foundation-model/ (see OCP-1GPU.md).
+# OpenShift AI TFM: casino-tfm-embed image (NeMo + script + weights) ServingRuntime + InferenceService.
+# Laptop pre-req: model/decoder-foundation-model/ on disk (gitignored; clone-nvidia-tfm.sh only if missing).
 
 # Fresh 1-GPU labs often ship with llama-32-3b-instruct (or similar) already on the GPU.
 # Stop other GPU InferenceServices / Deployments before scheduling tfm-embed.
@@ -341,48 +373,6 @@ ensure_ngc_secret() {
 
 
 
-ensure_tfm_checkpoint_pvc() {
-  local ckpt_dir="${SCRIPT_DIR}/model/decoder-foundation-model"
-  local safetensors="${ckpt_dir}/model-00001-of-00001.safetensors"
-  [[ -d "${ckpt_dir}" ]] || die "Missing ${ckpt_dir}. Run: ../nvidia-tfm/clone-nvidia-tfm.sh (see nvidia-tfm/OCP-1GPU.md)"
-  [[ -f "${safetensors}" ]] || die "Missing ${safetensors}. Run git lfs pull via clone-nvidia-tfm.sh"
-  local sz
-  sz="$(wc -c < "${safetensors}" | tr -d ' ')"
-  [[ "${sz}" -gt 1000000 ]] || die "${safetensors} looks like an LFS pointer (${sz} bytes). Re-run clone-nvidia-tfm.sh"
-
-  if ! oc get pvc tfm-checkpoint -n "${NAMESPACE}" >/dev/null 2>&1; then
-    log "Creating PVC tfm-checkpoint"
-    oc apply -n "${NAMESPACE}" -f - <<EOF
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: tfm-checkpoint
-  namespace: ${NAMESPACE}
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 2Gi
-EOF
-  else
-    ok "PVC tfm-checkpoint exists"
-  fi
-
-  log "Loading decoder-foundation-model onto PVC tfm-checkpoint"
-  oc delete pod tfm-ckpt-load -n "${NAMESPACE}" --ignore-not-found || true
-  oc run tfm-ckpt-load -n "${NAMESPACE}" --restart=Never \
-    --image=registry.access.redhat.com/ubi9/ubi-minimal \
-    --overrides="{\"spec\":{\"containers\":[{\"name\":\"load\",\"image\":\"registry.access.redhat.com/ubi9/ubi-minimal\",\"command\":[\"sleep\",\"3600\"],\"volumeMounts\":[{\"name\":\"ckpt\",\"mountPath\":\"/models\"}]}],\"volumes\":[{\"name\":\"ckpt\",\"persistentVolumeClaim\":{\"claimName\":\"tfm-checkpoint\"}}]}}"
-  oc wait -n "${NAMESPACE}" pod/tfm-ckpt-load --for=condition=Ready --timeout=180s
-  oc exec -n "${NAMESPACE}" tfm-ckpt-load -- microdnf install -y tar gzip
-  tar -C "${SCRIPT_DIR}/model" -czf /tmp/decoder-foundation-model.tgz decoder-foundation-model
-  oc cp /tmp/decoder-foundation-model.tgz "${NAMESPACE}/tfm-ckpt-load:/models/decoder-foundation-model.tgz"
-  oc exec -n "${NAMESPACE}" tfm-ckpt-load -- tar -C /models -xzf /models/decoder-foundation-model.tgz
-  oc delete pod tfm-ckpt-load -n "${NAMESPACE}" --ignore-not-found || true
-  rm -f /tmp/decoder-foundation-model.tgz
-  ok "Checkpoint loaded onto PVC"
-}
-
 # Verify OpenShift AI single-model serving (KServe) is ready before applying TFM manifests.
 # Fresh demo clusters often have the operator installed before CRDs finish registering.
 ensure_rhoai_kserve() {
@@ -463,18 +453,17 @@ deploy_rhoai() {
   fi
 
   local rhoai_dir="${MANIFESTS}/08-openshift-ai"
-  local script_py="${SCRIPT_DIR}/model/serve_embeddings.py"
   local embed_url="http://tfm-embed-predictor.${NAMESPACE}.svc:8080/v1/embeddings"
 
+  resolve_app_images
   log "Deploying OpenShift AI TFM ServingRuntime + InferenceService (--rhoai)"
+  log "  TFM image: ${TFM_IMAGE_REF}"
   [[ -d "${rhoai_dir}" ]] || die "Missing ${rhoai_dir}"
-  [[ -f "${script_py}" ]] || die "Missing ${script_py}"
 
   if [[ "${DRY_RUN}" == true ]]; then
     echo "DRY-RUN ensure_rhoai_kserve (DSC kserve=Managed + wait for CRDs)"
     echo "DRY-RUN free_single_gpu (stop llama / other GPU InferenceServices + scale GPU deploys)"
-    echo "DRY-RUN PVC tfm-checkpoint from model/decoder-foundation-model (NeMo via Quay; no NGC key)"
-    echo "DRY-RUN ConfigMap tfm-embed-script from ${script_py}"
+    echo "DRY-RUN ServingRuntime image=${TFM_IMAGE_REF} (no PVC / ConfigMap)"
     echo "DRY-RUN oc apply ${rhoai_dir}/*.yaml (namespace=${NAMESPACE})"
     echo "DRY-RUN patch casino-config TFM_MODE=http TFM_EMBED_URL=${embed_url} AI_MODE=nvidia"
     echo "DRY-RUN rollout restart deploy/sentinel-ml-engine deploy/sentinel-api"
@@ -484,13 +473,6 @@ deploy_rhoai() {
   ensure_rhoai_kserve
   free_single_gpu
   ensure_ngc_secret
-  ensure_tfm_checkpoint_pvc
-
-  oc create configmap tfm-embed-script \
-    -n "${NAMESPACE}" \
-    --from-file=serve_embeddings.py="${script_py}" \
-    --dry-run=client -o yaml | oc apply -f -
-  ok "ConfigMap tfm-embed-script"
 
   if oc get deploy tfm-embed -n "${NAMESPACE}" >/dev/null 2>&1; then
     log "Deleting legacy deploy/tfm-embed (InferenceService only)"
@@ -501,7 +483,8 @@ deploy_rhoai() {
   local hwp_name="${HARDWARE_PROFILE_NAME:-gpu-profile}"
   local hwp_ns="${HARDWARE_PROFILE_NAMESPACE:-redhat-ods-applications}"
 
-  sed "s/namespace: casino-sentinel/namespace: ${NAMESPACE}/g" \
+  sed -e "s/namespace: casino-sentinel/namespace: ${NAMESPACE}/g" \
+      -e "s|__SENTINEL_TFM_IMAGE__|${TFM_IMAGE_REF}|g" \
     "${rhoai_dir}/servingruntime-casino-tfm-nemo.yaml" | oc apply -f -
 
   sed -e "s/namespace: casino-sentinel/namespace: ${NAMESPACE}/g" \
@@ -509,8 +492,9 @@ deploy_rhoai() {
       -e "s/opendatahub.io\/hardware-profile-namespace: .*/opendatahub.io\/hardware-profile-namespace: ${hwp_ns}/" \
     "${rhoai_dir}/inferenceservice-tfm-embed.yaml" | oc apply -f -
   ok "Hardware profile annotations: ${hwp_name} (${hwp_ns})"
+  ok "ServingRuntime image: ${TFM_IMAGE_REF}"
 
-  log "Waiting for InferenceService/tfm-embed Ready (NeMo image pull can take several minutes)"
+  log "Waiting for InferenceService/tfm-embed Ready (casino-tfm-embed pull can take several minutes)"
   oc wait inferenceservice/tfm-embed -n "${NAMESPACE}" --for=condition=Ready --timeout=900s || true
 
   oc patch configmap casino-config -n "${NAMESPACE}" --type merge -p "{
@@ -529,18 +513,9 @@ deploy_rhoai() {
   ok "RHOAI TFM cutover: TFM_EMBED_URL=${embed_url} (ml-engine + api restarted)"
 }
 
-start_build() {
-  local name="$1"
-  local dir="$2"
-  log "Binary build ${name} from ${dir}"
-  if [[ "${DRY_RUN}" == true ]]; then
-    return 0
-  fi
-  oc start-build "${name}" -n "${NAMESPACE}" --from-dir="${dir}" --follow --wait
-}
-
 print_summary() {
   [[ "${DRY_RUN}" == true ]] && return 0
+  resolve_app_images
   log "Deployment summary"
   echo
   oc get kafka,kafkanodepool,kafkauser,kafkaconnect,kafkaconnector,deploy,svc,route,pvc -n "${NAMESPACE}" 2>/dev/null || true
@@ -557,9 +532,10 @@ print_summary() {
   echo "Postgres:         casino-db.${NAMESPACE}.svc:5432  (user casino / casino)"
   echo "XGBoost:          joblib in sentinel-python (sentinel-ml-engine)"
   echo "Pipeline:         normalizer → features → rules+ml → risk → alerts"
+  echo "Images:           ${PYTHON_IMAGE_REF} / ${UI_IMAGE_REF}"
   echo "TFM:              TFM_MODE/AI_MODE on casino-config (default hashed/mock). GPU: TFM_MODE=http + TFM_EMBED_URL"
   if [[ "${DEPLOY_RHOAI}" == true ]]; then
-    echo "RHOAI TFM:        ServingRuntime casino-tfm-nemo + InferenceService tfm-embed"
+    echo "RHOAI TFM:        ${TFM_IMAGE_REF} (ServingRuntime casino-tfm-nemo + InferenceService tfm-embed)"
     echo "TFM_EMBED_URL:    http://tfm-embed-predictor.${NAMESPACE}.svc:8080/v1/embeddings"
     oc get servingruntime,inferenceservice -n "${NAMESPACE}" 2>/dev/null || true
   fi
@@ -591,9 +567,8 @@ while [[ $# -gt 0 ]]; do
     --skip-operators)     SKIP_OPERATORS=true; shift ;;
     --install-operators)  SKIP_OPERATORS=false; shift ;;
     --skip-console)       SKIP_CONSOLE=true; shift ;;
-    --skip-builds)        SKIP_BUILDS=true; shift ;;
     --rhoai)              DEPLOY_RHOAI=true; shift ;;
-      --dry-run)            DRY_RUN=true; shift ;;
+    --dry-run)            DRY_RUN=true; shift ;;
     -h|--help)            usage; exit 0 ;;
     *)                    die "Unknown argument: $1" ;;
   esac
@@ -615,12 +590,10 @@ run_sql "${SCRIPT_DIR}/sql/02-seed.sql"
 ok "Database initialized"
 
 apply "${MANIFESTS}/02-kafka/kafka.yaml"
-apply "${MANIFESTS}/05-builds/python.yaml"
-apply "${MANIFESTS}/05-builds/ui.yaml"
-if [[ "${SKIP_BUILDS}" != true ]]; then
-  start_build sentinel-python "${SCRIPT_DIR}"
-  start_build sentinel-ui "${SCRIPT_DIR}/ui"
-fi
+resolve_app_images
+ok "App images from Quay (no sentinel-python / sentinel-ui BuildConfig)"
+log "  python: ${PYTHON_IMAGE_REF}"
+log "  ui:     ${UI_IMAGE_REF}"
 
 wait_cr kafka sentinel-kafka 720 || true
 apply "${MANIFESTS}/02-kafka/kafka-user-console.yaml"
@@ -634,8 +607,7 @@ apply "${MANIFESTS}/03-topics/topics.yaml"
 apply "${MANIFESTS}/04-debezium/imagestream.yaml"
 apply "${MANIFESTS}/04-debezium/kafka-connect.yaml"
 
-apply "${MANIFESTS}/06-apps/services.yaml"
-apply "${MANIFESTS}/06-apps/ui.yaml"
+apply_apps
 apply "${MANIFESTS}/07-monitoring/monitoring.yaml" || true
 for d in \
   sentinel-event-normalizer \

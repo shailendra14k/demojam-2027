@@ -24,8 +24,9 @@ dist/
 **/.DS_Store
 .ipynb_checkpoints/
 
-# NVIDIA TFM checkpoint copy (~55MB) — sync with ../nvidia-tfm/clone-nvidia-tfm.sh
-# Do not commit weights; serve_embeddings.py is tracked separately.
+# NVIDIA TFM checkpoint + local Containerfile / serve_embeddings.py (~55MB weights).
+# Not committed — bake with: TAG=latest ./scripts/build-push-images.sh --tfm
+# Deploy --rhoai defaults to quay.io/shailendra14k/casino-tfm-embed:latest
 model/decoder-foundation-model/
 
 # Do NOT ignore .dockerignore — it must be committed so OpenShift/docker

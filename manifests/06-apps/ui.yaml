@@ -22,7 +22,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: ui
-          image: image-registry.openshift-image-registry.svc:5000/casino-sentinel/sentinel-ui:latest
+          image: __SENTINEL_UI_IMAGE__
           ports:
             - containerPort: 8080
               name: http
