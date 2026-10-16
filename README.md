@@ -41,15 +41,6 @@ Casino systems  →  PostgreSQL (casino-db, CDC tables)
 
 Score weights (ConfigMap `casino-config`): **Rules 45% · XGBoost (ML) 35% · TFM / behavioral 20% · KYC 10%**.
 
-**Decision layer (after detection):** open-source **[OpenJev](https://github.com/razorback16/openjev)** recommends disposition (`escalate` / `need_info` / `close`). It does **not** replace Rules/XGBoost/TFM.
-
-| Mode | How |
-|------|-----|
-| **Codiv hosted** (default) | `OPENJEV_BASE_URL=https://api.codiv.ai` + free `TYPESAFE_API_KEY` / `CODIV_API_KEY` from [codiv.ai](https://codiv.ai) (100M tokens, no card) |
-| **In-cluster** | `./deploy.sh … --openjev` builds Verdict CPU image, sets URL to `http://openjev:8080` |
-| **mock** | `JEV_MODE=mock` — offline heuristics, no OpenJev |
-
-Investigation UI: **Run Jev** / **Apply Jev disposition**.
 
 With `./deploy.sh --rhoai`, `sentinel-ml-engine` tokenizes on CPU and calls the GPU InferenceService  
 `http://tfm-embed-predictor.<ns>.svc:8080/v1/embeddings` (`TFM_MODE=http`, `AI_MODE=nvidia`).
@@ -61,7 +52,6 @@ With `./deploy.sh --rhoai`, `sentinel-ml-engine` tokenizes on CPU and calls the 
 | **XGBoost**          | Supervised AML classifier                      | `model/artifacts/*.joblib` via `sentinel.aml_model` in `sentinel-ml-engine` (CPU)           |
 | **NVIDIA TFM** | Behavioral sequence embeddings | `AI_MODE=nvidia` + `TFM_MODE=http` (GPU); Isolation Forest removed |
 | **NVIDIA TFM**       | 512-d transaction embeddings                   | Default `TFM_MODE=hashed`; GPU: OpenShift AI InferenceService + `model/serve_embeddings.py` |
-| **OpenJev**          | Alert disposition (decision layer only)        | Codiv or `--openjev` in-cluster · `casino_common.jev_decision` |
 
 
 Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model) — clone/sync with `../nvidia-tfm/clone-nvidia-tfm.sh`. See `[../nvidia-tfm/OCP-1GPU.md](../nvidia-tfm/OCP-1GPU.md)`.
@@ -82,7 +72,7 @@ Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](http
 
 ```bash
 cd demojam-2027
-cp env.example .env         # set OCP_API and OCP_TOKEN; do not commit .env
+cp env.example .env         # set OCP_API + OCP_TOKEN (+ NAMESPACE); do not commit .env
 # Optional: retrain before image build
 #   cd model && python train_models.py && cd ..
 chmod +x deploy.sh destroy.sh demo.sh
@@ -112,11 +102,11 @@ Cluster needs: GPU Operator, OpenShift AI single-model serving (KServe).
 
 ```bash
 cd demojam-2027
-# .env: OCP_API + OCP_TOKEN only (NGC_API_KEY optional / unused for NeMo pull)
+# .env: OCP_API + OCP_TOKEN only (no NGC key required)
 ./deploy.sh --env ./.env --insecure --rhoai --install-operators
 ```
 
-`--rhoai` first checks OpenShift AI (DSC `kserve=Managed`, waits for ServingRuntime/InferenceService CRDs), frees the single GPU (stops other InferenceServices such as `llama-32-3b-instruct`, scales down other GPU Deployments), then creates PVC `tfm-checkpoint`, loads the checkpoint, mounts `model/serve_embeddings.py`, applies `manifests/08-openshift-ai/*` (Quay NeMo image), and sets `TFM_MODE=http` / `AI_MODE=nvidia` on `casino-config`. Set `SKIP_FREE_GPU=true` in `.env` to leave other GPU models running.
+`--rhoai` first checks OpenShift AI (DSC `kserve=Managed`, waits for ServingRuntime/InferenceService CRDs), frees the single GPU (stops other InferenceServices such as `llama-32-3b-instruct`, scales down other GPU Deployments), then creates PVC `tfm-checkpoint`, loads the checkpoint, mounts `model/serve_embeddings.py`, applies `manifests/08-openshift-ai/*` (Quay NeMo image), and sets `TFM_MODE=http` / `AI_MODE=nvidia` on `casino-config`..env`). Rare override: `SKIP_FREE_GPU=true` on the shell when invoking deploy.
 
 
 | Path                              | Role                                                  |
@@ -160,7 +150,7 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 | ----------------------------------------- | --------------------------------------------------------------- |
 | `deploy.sh`                               | Install                                                         |
 | `destroy.sh`                              | Tear down                                                       |
-| `env.example`                             | Copy to `.env` (`OCP_API`, `OCP_TOKEN`; `NGC_API_KEY` not required — NeMo on Quay) |
+| `env.example`                             | Copy to `.env` — **only** `OCP_API` / `OCP_TOKEN` / `NAMESPACE` / `INSECURE` |
 | `demo.sh` / `smoke-test.sh` / `status.sh` | Post-deploy only (see above)                                    |
 
 
@@ -224,7 +214,6 @@ UI path: open Casino Guard → Demo Controls → Start Scenario (same scenarios)
 | `--skip-console`      | Skip Streams Console                                                                                 |
 | `--skip-builds`       | Reuse existing ImageStreams                                                                          |
 | `--rhoai`             | Free GPU → TFM on OpenShift AI (PVC + Quay NeMo + `08-openshift-ai/*`); needs clone; **no** `NGC_API_KEY` |
-| `--openjev`           | Build/deploy in-cluster OpenJev (Verdict CPU) + point `casino-config` at `http://openjev:8080`         |
 | `--insecure`          | Skip API TLS verify                                                                                  |
 | `--dry-run`           | Print only                                                                                           |
 

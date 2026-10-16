@@ -20,19 +20,18 @@ type FlowEdge = { from: string; to: string; flowing?: boolean }
  * x/y are node centers.
  */
 const LAYOUT: Record<string, { x: number; y: number }> = {
-  db: { x: 8, y: 20 },
-  cdc: { x: 16, y: 62 },
-  kafka: { x: 27, y: 28 },
-  normalizer: { x: 38, y: 68 },
-  features: { x: 48, y: 30 },
-  rules: { x: 58, y: 10 },
-  ml: { x: 58, y: 42 },
-  tfm: { x: 58, y: 78 },
-  risk: { x: 70, y: 42 },
-  alerts: { x: 80, y: 18 },
-  openjev: { x: 80, y: 48 },
-  api: { x: 90, y: 32 },
-  ui: { x: 94, y: 78 },
+  db: { x: 9, y: 20 },
+  cdc: { x: 18, y: 62 },
+  kafka: { x: 30, y: 28 },
+  normalizer: { x: 42, y: 68 },
+  features: { x: 52, y: 30 },
+  rules: { x: 64, y: 10 },
+  ml: { x: 64, y: 42 },
+  tfm: { x: 64, y: 78 },
+  risk: { x: 76, y: 42 },
+  alerts: { x: 87, y: 18 },
+  api: { x: 87, y: 52 },
+  ui: { x: 93, y: 82 },
 }
 
 const KIND_GLYPH: Record<string, string> = {
@@ -41,19 +40,17 @@ const KIND_GLYPH: Record<string, string> = {
   bus: '≋',
   service: '●',
   gpu: '✦',
-  decide: '⬡',
   api: '◇',
   ui: '▣',
 }
 
 const LANES = [
-  { label: 'Ingest', x: 12 },
-  { label: 'Stream', x: 32 },
-  { label: 'Enrich', x: 48 },
-  { label: 'Analyze', x: 58 },
-  { label: 'Score', x: 70 },
-  { label: 'Disposition', x: 80 },
-  { label: 'Serve', x: 92 },
+  { label: 'Ingest', x: 14 },
+  { label: 'Stream', x: 36 },
+  { label: 'Enrich', x: 52 },
+  { label: 'Analyze', x: 64 },
+  { label: 'Decide', x: 76 },
+  { label: 'Serve', x: 90 },
 ]
 
 function StatusBadge({ ok, optional }: { ok: boolean; optional?: boolean }) {
@@ -103,10 +100,10 @@ export default function PipelineStatus() {
   const visibleNodes = useMemo(
     () =>
       components.filter((c) => {
-        if (c.id === 'openjev' && data?.openjev?.mode === 'off') return false
+        if (c.id === 'tfm' && c.optional && data?.tfm?.mode !== 'http') return true
         return true
       }),
-    [components, data?.openjev?.mode],
+    [components, data?.tfm?.mode],
   )
 
   const edgePaths = useMemo(() => {
@@ -133,7 +130,7 @@ export default function PipelineStatus() {
       <section className="hero">
         <h2>Pipeline status</h2>
         <p>
-          Live topology on OpenShift — component health and traffic through the Red Hat AML stack.
+          Live topology — component health and traffic path through the AML stack.
         </p>
       </section>
 
@@ -150,8 +147,7 @@ export default function PipelineStatus() {
           </span>
           <span className="muted mono">
             mode {data?.pipeline_mode ?? '—'} · AI {data?.ai_mode ?? '—'} · TFM{' '}
-            {data?.tfm?.mode ?? '—'} · OpenJev {data?.openjev?.mode ?? '—'}
-            {data?.openjev?.model ? `/${data.openjev.model}` : ''}
+            {data?.tfm?.mode ?? '—'}
           </span>
         </div>
         <div className="flow-legend">
@@ -183,17 +179,17 @@ export default function PipelineStatus() {
           <svg className="flow-edges" viewBox="0 0 100 100" preserveAspectRatio="none">
             <defs>
               <linearGradient id="flowGradTeal" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#ee0000" stopOpacity="0.2" />
-                <stop offset="50%" stopColor="#ee0000" stopOpacity="1" />
-                <stop offset="100%" stopColor="#2b9af3" stopOpacity="0.85" />
+                <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.2" />
+                <stop offset="50%" stopColor="#2dd4bf" stopOpacity="1" />
+                <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.85" />
               </linearGradient>
               <linearGradient id="flowGradViolet" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#73c5c5" stopOpacity="0.9" />
-                <stop offset="100%" stopColor="#c46100" stopOpacity="0.85" />
+                <stop offset="0%" stopColor="#a78bfa" stopOpacity="0.9" />
+                <stop offset="100%" stopColor="#e879f9" stopOpacity="0.85" />
               </linearGradient>
               <linearGradient id="flowGradAmber" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#f0ab00" stopOpacity="0.85" />
-                <stop offset="100%" stopColor="#2b9af3" stopOpacity="0.9" />
+                <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.85" />
+                <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.9" />
               </linearGradient>
             </defs>
             {edgePaths.map((e) => (

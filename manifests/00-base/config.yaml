@@ -29,16 +29,6 @@ data:
   RISK_WEIGHT_ML: "0.35"
   RISK_WEIGHT_BEHAVIORAL: "0.20"
   RISK_WEIGHT_KYC: "0.10"
-  # OpenJev decision layer (disposition only) — in-cluster Verdict CPU by default
-  # Codiv alternative: OPENJEV_BASE_URL=https://api.codiv.ai + Secret typesafe-jev
-  JEV_MODE: live
-  JEV_MODEL: verdict-1.4
-  OPENJEV_BASE_URL: http://openjev:8080
-  TYPESAFE_BASE_URL: http://openjev:8080
-  JEV_AUTO_LIVE: "true"
-  JEV_TIMEOUT_SEC: "60"
-  JEV_SYNC_WAIT_SEC: "12"
-  # Placeholder key for in-cluster; override via Secret typesafe-jev if needed
   FEATURES_TOPIC: aml.features
   ENRICHED_TOPIC: casino.events.enriched
   NORMALIZED_TOPIC: casino.events.normalized

@@ -35,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     --delete-namespace)  DELETE_NAMESPACE=true; shift ;;
     -h|--help)
       echo "Usage: ./destroy.sh --env ./.env [--delete-namespace]"
+      echo ".env needs OCP_API + OCP_TOKEN (+ NAMESPACE); same as deploy."
       exit 0
       ;;
     *) die "Unknown argument: $1" ;;
