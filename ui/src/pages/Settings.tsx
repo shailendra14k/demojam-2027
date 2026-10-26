@@ -3,10 +3,11 @@ import { api } from '../api'
 
 export default function Settings() {
   const [w, setW] = useState<any>(null)
-  const [intervalSec, setIntervalSec] = useState(30)
+  const [intervalSec, setIntervalSec] = useState(60)
   const [enabled, setEnabled] = useState(true)
   const [simNote, setSimNote] = useState('')
   const [saving, setSaving] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const [status, setStatus] = useState('')
 
   const load = () => {
@@ -14,7 +15,7 @@ export default function Settings() {
     api
       .simulatorSettings()
       .then((s) => {
-        setIntervalSec(Number(s.interval_sec) || 30)
+        setIntervalSec(Number(s.interval_sec) || 60)
         setEnabled(Boolean(s.enabled))
         setSimNote(s.note || '')
       })
@@ -45,19 +46,48 @@ export default function Settings() {
     }
   }
 
+  const onClearLive = async () => {
+    if (
+      !window.confirm(
+        'Clear all live monitor transactions and alerts, then seed fresh demo traffic with complete fields?',
+      )
+    ) {
+      return
+    }
+    setClearing(true)
+    setStatus('')
+    try {
+      const r = await api.clearLive({
+        seed: true,
+        scenarios: ['structuring', 'rapid_wire', 'shared_device'],
+      })
+      const seeded = (r.seeded || []).map((s: any) => s.scenario).join(', ') || 'none'
+      setStatus(
+        `Cleared ${r.cleared_live_events ?? 0} live rows and ${r.cleared_memory_alerts ?? 0} alerts. ` +
+          `DB removed alerts=${r.db_deleted?.alerts ?? 0}, txns=${r.db_deleted?.transactions ?? 0}. ` +
+          `Seeded: ${seeded}. New scores appear as CDC finishes.`,
+      )
+    } catch (err) {
+      setStatus(String(err))
+    } finally {
+      setClearing(false)
+    }
+  }
+
   return (
     <section className="ops-console">
       <div className="page-head">
         <div>
           <h2>Settings</h2>
-          <p className="muted">Scoring weights and background dummy traffic rate.</p>
+          <p className="muted">Scoring weights, live traffic rate, and live data reset.</p>
         </div>
       </div>
 
       <section className="panel" style={{ marginBottom: '1.5rem' }}>
         <h3>Background simulator</h3>
         <p className="muted">
-          Quiet casino traffic written to Postgres (CDC → pipeline). Demo scenarios are separate and unchanged.
+          Quiet casino traffic written to Postgres (CDC → pipeline). Default is one transaction every
+          60 seconds (1 per minute). Change the interval anytime.
         </p>
         <form onSubmit={onSave} className="settings-form">
           <label>
@@ -81,6 +111,17 @@ export default function Settings() {
         </form>
         {simNote && <p className="muted">{simNote}</p>}
         {status && <p className="muted">{status}</p>}
+      </section>
+
+      <section className="panel" style={{ marginBottom: '1.5rem' }}>
+        <h3>Live monitor data</h3>
+        <p className="muted">
+          Remove every live transaction and alert from the stream, wipe demo activity rows, then
+          insert fresh scenarios with Type, Amount, Status, and location filled in.
+        </p>
+        <button type="button" className="btn" disabled={clearing} onClick={onClearLive}>
+          {clearing ? 'Clearing…' : 'Clear all live transactions'}
+        </button>
       </section>
 
       <section className="panel">

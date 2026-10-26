@@ -43,16 +43,6 @@ class ScenarioBody(BaseModel):
     name: str = "mixed"
 
 
-class CaseStatusBody(BaseModel):
-    status: str
-    assignee: str | None = None
-
-
-class CaseNoteBody(BaseModel):
-    author: str = "Sarah Wilson"
-    content: str
-
-
 def _try_db() -> bool:
     global _db_ok
     try:
@@ -338,85 +328,6 @@ def transactions(limit: int = 100) -> dict:
     }
 
 
-@app.get("/api/v1/cases")
-def cases() -> dict:
-    if _mode() == "mock":
-        return {"items": mock_data.cases()}
-    try:
-        rows = db.fetch_all(
-            """
-            SELECT case_id, player_id, player_name, title, priority, status, assignee, created_at, updated_at
-            FROM aml.cases ORDER BY created_at DESC
-            """
-        )
-        items = [
-            {
-                "caseId": r["case_id"],
-                "playerId": r["player_id"],
-                "playerName": r["player_name"],
-                "title": r["title"],
-                "priority": r["priority"],
-                "status": r["status"],
-                "assignee": r["assignee"],
-                "createdAt": _iso(r["created_at"]),
-            }
-            for r in rows
-        ]
-        return {"items": items or mock_data.cases()}
-    except Exception:  # noqa: BLE001
-        return {"items": mock_data.cases()}
-
-
-@app.put("/api/v1/cases/{case_id}/status")
-def case_status(case_id: str, body: CaseStatusBody) -> dict:
-    if not _db_ok:
-        return {"caseId": case_id, "status": body.status, "assignee": body.assignee}
-    db.execute(
-        "UPDATE aml.cases SET status = %s, assignee = COALESCE(%s, assignee), updated_at = now() WHERE case_id = %s",
-        (body.status, body.assignee, case_id),
-    )
-    return {"caseId": case_id, "status": body.status, "assignee": body.assignee}
-
-
-@app.post("/api/v1/cases/{case_id}/notes")
-def case_note(case_id: str, body: CaseNoteBody) -> dict:
-    if not _db_ok:
-        return {"ok": True}
-    import uuid
-
-    db.execute(
-        "INSERT INTO aml.case_notes (note_id, case_id, author, content) VALUES (%s,%s,%s,%s)",
-        (f"NOTE-{uuid.uuid4().hex[:10]}", case_id, body.author, body.content),
-    )
-    return {"ok": True}
-
-
-@app.get("/api/v1/sars")
-def sars() -> dict:
-    if _mode() == "mock":
-        return {"items": mock_data.sars()}
-    try:
-        rows = db.fetch_all(
-            "SELECT sar_id, case_id, player_id, player_name, status, narrative, amount, created_at FROM aml.sars ORDER BY created_at DESC"
-        )
-        items = [
-            {
-                "sarId": r["sar_id"],
-                "caseId": r["case_id"],
-                "playerId": r["player_id"],
-                "playerName": r["player_name"],
-                "status": r["status"],
-                "narrative": r["narrative"],
-                "amount": float(r["amount"] or 0),
-                "createdAt": _iso(r["created_at"]),
-            }
-            for r in rows
-        ]
-        return {"items": items or mock_data.sars()}
-    except Exception:  # noqa: BLE001
-        return {"items": mock_data.sars()}
-
-
 @app.get("/api/v1/rules")
 def rules_catalog() -> dict:
     return {"items": mock_data.rules_catalog()}
@@ -425,19 +336,6 @@ def rules_catalog() -> dict:
 @app.get("/api/v1/network")
 def network() -> dict:
     return mock_data.network()
-
-
-@app.get("/api/v1/reports")
-def reports() -> dict:
-    return {
-        "ctr": {"pending": 3, "filedToday": 11, "rejected": 0},
-        "sar": {"pending": 6, "filedToday": 1, "draft": 2},
-        "items": [
-            {"id": "CTR-2408-01", "type": "CTR", "playerId": "C10990", "amount": 15000, "status": "PENDING"},
-            {"id": "SAR-9001", "type": "SAR", "playerId": "C10990", "amount": 267500, "status": "PENDING"},
-            {"id": "SAR-9002", "type": "SAR", "playerId": "C10281", "amount": 184200, "status": "PENDING"},
-        ],
-    }
 
 
 @app.post("/api/v1/demo/scenarios/{name}")

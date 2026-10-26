@@ -1084,6 +1084,106 @@ tr:hover td { background: rgba(238, 0, 0, 0.05); }
 }
 .error { color: var(--danger); }
 
+.live-monitor-page { display: grid; gap: 1rem; }
+.live-row-active td { background: var(--accent-dim); }
+.live-actions { text-align: right; white-space: nowrap; }
+.live-actions .btn { padding: 0.35rem 0.7rem; font-size: 0.78rem; }
+.case-detail-panel { animation: rise 280ms ease both; }
+.case-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+  margin-bottom: 0.85rem;
+}
+.case-detail-head h3 { margin: 0 0 0.25rem; }
+.case-tabs { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.case-meta { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+.case-summary h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.case-plain h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+.case-plain p {
+  margin: 0;
+  line-height: 1.5;
+  font-size: 0.95rem;
+}
+.case-in-short {
+  margin: 0.25rem 0 0 !important;
+  font-size: 1.05rem !important;
+  font-weight: 600;
+  line-height: 1.45 !important;
+}
+.case-meta-plain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+.case-meta-plain .badge {
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--font);
+  font-size: 0.78rem;
+  max-width: 22rem;
+  white-space: normal;
+  line-height: 1.3;
+}
+.case-explain-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.55rem;
+  line-height: 1.45;
+  font-size: 0.92rem;
+}
+.case-json {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  max-height: 480px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.03);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.settings-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+  margin: 0.85rem 0;
+}
+.settings-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.settings-form input[type='number'] {
+  width: 8rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--mono);
+}
+.settings-check {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 @media (max-width: 1100px) {
   .net-layout { grid-template-columns: 1fr; }
   .net-inspector { max-height: none; }

@@ -32,12 +32,17 @@ export const api = {
   patchAlert: (id: string, body: any) =>
     req<any>(`/api/v1/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   rulesCatalog: () => req<any>('/api/v1/rules/catalog'),
-  cases: () => req<any>('/api/v1/cases'),
-  sars: () => req<any>('/api/v1/sars'),
   weights: () => req<any>('/api/v1/settings/weights'),
   simulatorSettings: () => req<any>('/api/v1/settings/simulator'),
   patchSimulatorSettings: (body: { interval_sec?: number; enabled?: boolean }) =>
     req<any>('/api/v1/settings/simulator', { method: 'PATCH', body: JSON.stringify(body) }),
+  clearLive: (body?: { seed?: boolean; scenarios?: string[] }) =>
+    req<any>('/api/v1/live/clear', {
+      method: 'POST',
+      body: JSON.stringify(body ?? { seed: true }),
+    }),
+  caseDetail: (caseId: string) =>
+    req<any>(`/api/v1/cases/${encodeURIComponent(caseId)}`),
   networkInvestigations: () => req<any>('/api/v1/network/investigations'),
   investigationNetwork: (id: string) =>
     req<any>(`/api/v1/network/investigations/${encodeURIComponent(id)}`),

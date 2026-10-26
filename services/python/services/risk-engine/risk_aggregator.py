@@ -117,4 +117,9 @@ def aggregate(
         rule_hits=rules.hits,
         explanations=explanations,
         weights={**w, "kyc_score": kyc},
+        amount=getattr(rules, "amount", None),
+        transaction_type=getattr(rules, "transaction_type", None) or "TRANSACTION",
+        currency=getattr(rules, "currency", None) or "USD",
+        location=getattr(rules, "location", None) or "Casino floor",
+        payment_method=getattr(rules, "payment_method", None) or "UNKNOWN",
     )

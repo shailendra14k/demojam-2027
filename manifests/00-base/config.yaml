@@ -23,7 +23,7 @@ data:
   CDC_WAIT_SECONDS: "45"
   LOG_LEVEL: INFO
   # Background dummy traffic (1 txn per interval). Editable from UI Settings.
-  SIMULATOR_INTERVAL_SEC: "30"
+  SIMULATOR_INTERVAL_SEC: "60"
   SIMULATOR_ENABLED: "true"
   RISK_WEIGHT_RULES: "0.45"
   RISK_WEIGHT_ML: "0.35"

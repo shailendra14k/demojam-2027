@@ -230,7 +230,7 @@ export default function Player360() {
                 {(data.alerts || []).map((a: any) => (
                   <tr key={a.alert_id}>
                     <td>
-                      <Link to="/investigate">
+                      <Link to={`/live?case=${encodeURIComponent(a.alert_id)}`}>
                         <DetectionBadgeFromAlert alert={a} />
                       </Link>
                     </td>

@@ -1,16 +1,12 @@
-import { NavLink, Route, Routes } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import LiveMonitor from './pages/LiveMonitor'
-import Investigation from './pages/Investigation'
 import Player360 from './pages/Player360'
 import DemoControls from './pages/DemoControls'
 import PipelineStatus from './pages/PipelineStatus'
-import Cases from './pages/Cases'
-import SAR from './pages/SAR'
 import Rules from './pages/Rules'
 import Settings from './pages/Settings'
 import Network from './pages/Network'
-import Reports from './pages/Reports'
 
 export default function App() {
   return (
@@ -26,10 +22,6 @@ export default function App() {
         <nav className="nav">
           <NavLink to="/" end>Dashboard</NavLink>
           <NavLink to="/live">Live</NavLink>
-          <NavLink to="/investigate">Investigate</NavLink>
-          <NavLink to="/cases">Cases</NavLink>
-          <NavLink to="/sar">SAR</NavLink>
-          <NavLink to="/reports">Reports</NavLink>
           <NavLink to="/network">Network</NavLink>
           <NavLink to="/player">Player 360</NavLink>
           <NavLink to="/rules">Rules</NavLink>
@@ -42,10 +34,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/live" element={<LiveMonitor />} />
-          <Route path="/investigate" element={<Investigation />} />
-          <Route path="/cases" element={<Cases />} />
-          <Route path="/sar" element={<SAR />} />
-          <Route path="/reports" element={<Reports />} />
+          <Route path="/investigate" element={<Navigate to="/live" replace />} />
           <Route path="/network" element={<Network />} />
           <Route path="/network/:investigationId" element={<Network />} />
           <Route path="/player" element={<Player360 />} />

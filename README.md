@@ -74,7 +74,7 @@ Casino systems  →  PostgreSQL (casino-db, CDC tables)
            + human-readable explanation
                       │
                       ▼
-           AML alerts + cases  (sentinel-alert-service → Postgres)
+           AML alerts  (sentinel-alert-service → Postgres)
                       │
                       ▼
            Casino Guard React UI  (sentinel-api + sentinel-ui)

@@ -170,8 +170,11 @@ export default function Network() {
                   Player 360
                 </Link>
               )}
-              <Link className="btn secondary" to="/investigate">
-                Investigation desk
+              <Link
+                className="btn secondary"
+                to={graph.investigation_id ? `/live?case=${encodeURIComponent(graph.investigation_id)}` : '/live'}
+              >
+                Open in Live
               </Link>
               <button
                 type="button"

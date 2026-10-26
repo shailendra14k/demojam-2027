@@ -116,14 +116,16 @@ def normalize(key: str | None, value: dict) -> NormalizedEvent:
         transaction_id=str(transaction_id) if transaction_id else None,
         correlation_id=correlation_id,
         timestamp=timestamp,
-        amount=float(amount) if amount is not None else None,
+        amount=float(amount) if amount is not None else (
+            0.0 if table in {"transactions", "wagers", "chip_transactions", "cage_transactions"} else None
+        ),
         currency=str(after.get("currency") or "USD"),
-        channel=after.get("channel") or after.get("payment_method"),
+        channel=after.get("channel") or after.get("payment_method") or "UNKNOWN",
         device_id=str(after["device_id"]) if after.get("device_id") else None,
         payment_method_id=str(after["payment_id"])
         if after.get("payment_id")
         else (str(after["payment_method_id"]) if after.get("payment_method_id") else None),
-        location=after.get("location") or after.get("cage_window") or after.get("table_id"),
+        location=after.get("location") or after.get("cage_window") or after.get("table_id") or "Casino floor",
         raw=unwrapped["raw"],
         metadata={
             "table": table,

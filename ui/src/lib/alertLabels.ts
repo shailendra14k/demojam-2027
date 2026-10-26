@@ -40,7 +40,7 @@ const RULE_AI_LABELS: Record<string, string> = {
 const GENERIC_TITLE_RE =
   /^(AML(\s+(CRITICAL|HIGH|MEDIUM|LOW))?(\s*:.*)?|AML-\d{3})$/i
 
-function ruleId(hit: unknown): string {
+export function ruleId(hit: unknown): string {
   if (!hit) return ''
   if (typeof hit === 'string') return hit.trim()
   if (typeof hit === 'object') {

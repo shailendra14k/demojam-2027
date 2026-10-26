@@ -174,11 +174,28 @@ def _row_to_alert(row: Any) -> dict[str, Any]:
         title=data.get("title") or data.get("alert_type"),
         summary=data.get("explanation") or data.get("summary"),
     )
+    tid = str(triggering[0]) if triggering else data.get("transaction_id")
+    tx = _lookup_transaction(str(tid) if tid else None) if tid else {}
+    # Prefer explicit fields when present (Kafka alert path may already carry them)
+    amount = data.get("amount")
+    if amount is None:
+        amount = tx.get("amount")
+    try:
+        amount_f = round(float(amount), 2) if amount is not None else 0.0
+    except (TypeError, ValueError):
+        amount_f = 0.0
+    tx_type = (
+        data.get("transaction_type")
+        or data.get("event_type")
+        or tx.get("transaction_type")
+        or tx.get("event_type")
+        or "TRANSACTION"
+    )
     return {
         "alert_id": str(data["alert_id"]) if data.get("alert_id") is not None else None,
         "player_id": str(data["player_id"]) if data.get("player_id") is not None else None,
         "player_name": data.get("player_name"),
-        "transaction_id": str(triggering[0]) if triggering else data.get("transaction_id"),
+        "transaction_id": str(tid) if tid else "TXN-UNKNOWN",
         "event_id": str(triggering[0]) if triggering else data.get("event_id"),
         "correlation_id": str(triggering[1]) if len(triggering) > 1 else data.get("correlation_id"),
         "risk_level": data.get("priority") or data.get("risk_level") or "MEDIUM",
@@ -190,6 +207,9 @@ def _row_to_alert(row: Any) -> dict[str, Any]:
         "rule_hits": rule_hits,
         "explanations": explanations,
         "matched_rules": matched,
+        "amount": amount_f,
+        "transaction_type": str(tx_type).upper(),
+        "currency": tx.get("currency") or data.get("currency") or "USD",
         "created_at": _iso(data.get("created_at")),
         "updated_at": _iso(data.get("updated_at") or data.get("created_at")),
     }
@@ -225,66 +245,219 @@ def _push_live_event(item: dict[str, Any], *, broadcast: bool = True) -> bool:
     return True
 
 
-def _live_item_from_alert(alert: dict[str, Any], tx: dict[str, Any] | None = None) -> dict[str, Any]:
-    tx = tx or {}
-    hits = alert.get("rule_hits") or []
+def _nz(value: Any, default: Any) -> Any:
+    """Never return None/empty for displayable fields."""
+    if value is None:
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    return value
+
+
+def _resolve_tx_fields(
+    *,
+    tx: dict[str, Any] | None = None,
+    source: dict[str, Any] | None = None,
+    player_id: str | None = None,
+) -> dict[str, Any]:
+    """Merge transaction lookup + assessment/alert source into non-null Type/Amount fields."""
+    tx = dict(tx or {})
+    source = dict(source or {})
+    amount = tx.get("amount")
+    if amount is None:
+        amount = source.get("amount")
+    tx_type = (
+        tx.get("transaction_type")
+        or tx.get("event_type")
+        or source.get("transaction_type")
+        or source.get("event_type")
+        or source.get("txn_type")
+    )
+    currency = _nz(tx.get("currency") or source.get("currency"), "USD")
+    location = _nz(tx.get("location") or source.get("location"), "Casino floor")
+    payment = _nz(
+        tx.get("payment_method") or source.get("payment_method") or source.get("channel"),
+        "UNKNOWN",
+    )
+    if (amount is None or not tx_type) and player_id:
+        latest = _lookup_latest_transaction(str(player_id))
+        if amount is None and latest.get("amount") is not None:
+            amount = latest["amount"]
+        if not tx_type:
+            tx_type = latest.get("transaction_type") or latest.get("event_type")
+        currency = _nz(currency if currency != "USD" else latest.get("currency"), "USD")
+        location = _nz(
+            location if location != "Casino floor" else latest.get("location"),
+            "Casino floor",
+        )
+        payment = _nz(
+            payment if payment != "UNKNOWN" else latest.get("payment_method"),
+            "UNKNOWN",
+        )
+    try:
+        amount_f = round(float(amount), 2) if amount is not None else 0.0
+    except (TypeError, ValueError):
+        amount_f = 0.0
+    tx_type_s = str(tx_type or "TRANSACTION").upper()
+    return {
+        "amount": amount_f,
+        "transaction_type": tx_type_s,
+        "event_type": tx_type_s,
+        "currency": str(currency or "USD"),
+        "location": str(location or "Casino floor"),
+        "payment_method": str(payment or "UNKNOWN"),
+        "created_at": tx.get("created_at") or source.get("created_at") or source.get("timestamp"),
+    }
+
+
+def _normalize_rule_hits(hits: Any) -> list[dict[str, Any]]:
     if isinstance(hits, str):
         try:
             hits = json.loads(hits)
         except json.JSONDecodeError:
-            hits = []
+            hits = [hits]
+    if not isinstance(hits, list):
+        hits = []
+    out: list[dict[str, Any]] = []
+    for h in hits:
+        if isinstance(h, str):
+            out.append(
+                {
+                    "rule_id": h,
+                    "rule_name": h,
+                    "severity": "MEDIUM",
+                    "score": 0.5,
+                    "description": f"Rule {h} fired",
+                    "evidence": {},
+                }
+            )
+            continue
+        if not isinstance(h, dict):
+            continue
+        rid = str(h.get("rule_id") or h.get("id") or "RULE")
+        out.append(
+            {
+                "rule_id": rid,
+                "rule_name": _nz(h.get("rule_name") or h.get("name"), rid),
+                "severity": str(_nz(h.get("severity"), "MEDIUM")).upper(),
+                "score": float(h.get("score") if h.get("score") is not None else 0.5),
+                "description": _nz(h.get("description"), f"Rule {rid} matched this activity"),
+                "evidence": h.get("evidence") if isinstance(h.get("evidence"), dict) else {},
+            }
+        )
+    return out
+
+
+def _match_alert_for_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    eid = str(event.get("event_id") or "")
+    tid = str(event.get("transaction_id") or "")
+    cid = str(event.get("correlation_id") or "")
+    pid = str(event.get("player_id") or "")
+    for a in ALERTS:
+        if eid and str(a.get("event_id") or "") == eid:
+            return a
+        if tid and str(a.get("transaction_id") or "") == tid:
+            return a
+        if cid and str(a.get("correlation_id") or "") == cid and str(a.get("player_id") or "") == pid:
+            return a
+    return None
+
+
+def _live_item_from_alert(alert: dict[str, Any], tx: dict[str, Any] | None = None) -> dict[str, Any]:
+    hits = _normalize_rule_hits(alert.get("rule_hits") or alert.get("matched_rules") or [])
     score = alert.get("score")
     try:
-        score_f = float(score) if score is not None else None
+        score_f = float(score) if score is not None else 0.0
     except (TypeError, ValueError):
-        score_f = None
+        score_f = 0.0
+    fields = _resolve_tx_fields(tx=tx, source=alert, player_id=str(alert.get("player_id") or "") or None)
+    status = str(_nz(alert.get("status"), "OPEN")).upper()
     return {
         "event": {
-            "event_id": alert.get("event_id"),
-            "player_id": alert.get("player_id"),
-            "transaction_id": alert.get("transaction_id"),
-            "correlation_id": alert.get("correlation_id"),
-            "timestamp": _iso(alert.get("created_at")) or _iso(tx.get("created_at")),
-            "amount": tx.get("amount"),
-            "transaction_type": tx.get("transaction_type") or tx.get("event_type"),
-            "event_type": tx.get("event_type") or tx.get("transaction_type"),
+            "event_id": _nz(alert.get("event_id"), alert.get("transaction_id") or alert.get("alert_id") or "EVT-UNKNOWN"),
+            "player_id": _nz(alert.get("player_id"), "UNKNOWN"),
+            "transaction_id": _nz(alert.get("transaction_id"), "TXN-UNKNOWN"),
+            "correlation_id": _nz(alert.get("correlation_id"), "COR-UNKNOWN"),
+            "timestamp": _iso(alert.get("created_at"))
+            or _iso(fields.get("created_at"))
+            or datetime.now(timezone.utc).isoformat(),
+            "amount": fields["amount"],
+            "transaction_type": fields["transaction_type"],
+            "event_type": fields["event_type"],
+            "currency": fields["currency"],
+            "location": fields["location"],
+            "payment_method": fields["payment_method"],
+            "status": status,
         },
         "risk": {
-            "risk_level": alert.get("risk_level"),
+            "risk_level": str(_nz(alert.get("risk_level"), "MEDIUM")).upper(),
             "final_score": score_f,
             "rule_hits": hits,
-            "explanations": alert.get("explanations") or [],
+            "explanations": alert.get("explanations") or ([alert.get("summary")] if alert.get("summary") else []),
         },
         "rules": {"hits": hits},
-        "alert": {"alert_id": alert.get("alert_id"), "title": alert.get("title")},
+        "alert": {
+            "alert_id": _nz(alert.get("alert_id"), "ALERT-UNKNOWN"),
+            "title": _nz(alert.get("title") or alert.get("display_label"), "AML alert"),
+            "status": status,
+        },
+        "status": status,
     }
 
 
 def _live_item_from_assessment(assessment: dict[str, Any], tx: dict[str, Any] | None = None) -> dict[str, Any]:
-    tx = tx or {}
-    hits = assessment.get("rule_hits") or []
-    return {
+    hits = _normalize_rule_hits(assessment.get("rule_hits") or [])
+    fields = _resolve_tx_fields(
+        tx=tx,
+        source=assessment,
+        player_id=str(assessment.get("player_id") or "") or None,
+    )
+    matched = _match_alert_for_event(assessment)
+    status = str(
+        _nz(
+            (matched or {}).get("status"),
+            "OPEN" if float(assessment.get("final_score") or 0) >= float(os.getenv("ALERT_THRESHOLD", "0.55")) else "MONITORING",
+        )
+    ).upper()
+    item = {
         "event": {
-            "event_id": assessment.get("event_id"),
-            "player_id": assessment.get("player_id"),
-            "transaction_id": assessment.get("transaction_id"),
-            "correlation_id": assessment.get("correlation_id"),
-            "timestamp": _iso(assessment.get("timestamp")) or _iso(tx.get("created_at")),
-            "amount": tx.get("amount"),
-            "transaction_type": tx.get("transaction_type") or tx.get("event_type"),
-            "event_type": tx.get("event_type") or tx.get("transaction_type"),
+            "event_id": _nz(assessment.get("event_id"), assessment.get("transaction_id") or "EVT-UNKNOWN"),
+            "player_id": _nz(assessment.get("player_id"), "UNKNOWN"),
+            "transaction_id": _nz(assessment.get("transaction_id"), "TXN-UNKNOWN"),
+            "correlation_id": _nz(assessment.get("correlation_id"), "COR-UNKNOWN"),
+            "timestamp": _iso(assessment.get("timestamp"))
+            or _iso(fields.get("created_at"))
+            or datetime.now(timezone.utc).isoformat(),
+            "amount": fields["amount"],
+            "transaction_type": fields["transaction_type"],
+            "event_type": fields["event_type"],
+            "currency": fields["currency"],
+            "location": fields["location"],
+            "payment_method": fields["payment_method"],
+            "status": status,
         },
         "risk": {
-            "risk_level": assessment.get("risk_level"),
-            "final_score": assessment.get("final_score"),
-            "rules_score": assessment.get("rules_score"),
-            "ml_score": assessment.get("ml_score"),
-            "behavioral_score": assessment.get("behavioral_score"),
+            "risk_level": str(_nz(assessment.get("risk_level"), "LOW")).upper(),
+            "final_score": float(assessment.get("final_score") if assessment.get("final_score") is not None else 0.0),
+            "rules_score": float(assessment.get("rules_score") if assessment.get("rules_score") is not None else 0.0),
+            "ml_score": float(assessment.get("ml_score") if assessment.get("ml_score") is not None else 0.0),
+            "behavioral_score": float(
+                assessment.get("behavioral_score") if assessment.get("behavioral_score") is not None else 0.0
+            ),
             "rule_hits": hits,
-            "explanations": assessment.get("explanations") or [],
+            "explanations": assessment.get("explanations")
+            or ["Composite risk score from rules, ML, and behavioral signals."],
         },
-        "rules": {"hits": hits, "aggregate_score": assessment.get("rules_score")},
+        "rules": {"hits": hits, "aggregate_score": assessment.get("rules_score") or 0.0},
+        "status": status,
     }
+    if matched:
+        item["alert"] = {
+            "alert_id": matched.get("alert_id"),
+            "title": matched.get("title") or matched.get("display_label") or "AML alert",
+            "status": status,
+        }
+    return item
 
 
 def _lookup_transaction(transaction_id: str | None) -> dict[str, Any]:
@@ -300,7 +473,8 @@ def _lookup_transaction(transaction_id: str | None) -> dict[str, Any]:
             row = conn.execute(
                 text(
                     """
-                    SELECT amount, txn_type AS transaction_type, created_at
+                    SELECT amount, txn_type AS transaction_type, currency, location,
+                           payment_method, created_at
                     FROM transactions
                     WHERE transaction_id = :tid
                     LIMIT 1
@@ -314,11 +488,15 @@ def _lookup_transaction(transaction_id: str | None) -> dict[str, Any]:
                     out["created_at"] = _iso(out["created_at"])
                 if out.get("amount") is not None:
                     out["amount"] = float(out["amount"])
+                out["transaction_type"] = out.get("transaction_type") or "TRANSACTION"
+                out["currency"] = out.get("currency") or "USD"
+                out["location"] = out.get("location") or "Casino floor"
+                out["payment_method"] = out.get("payment_method") or "UNKNOWN"
                 return out
             row = conn.execute(
                 text(
                     """
-                    SELECT amount, game_type AS transaction_type, created_at
+                    SELECT amount, game_type AS transaction_type, location, created_at
                     FROM wagers WHERE wager_id = :tid LIMIT 1
                     """
                 ),
@@ -328,6 +506,9 @@ def _lookup_transaction(transaction_id: str | None) -> dict[str, Any]:
                 out = dict(row)
                 out["event_type"] = "WAGER"
                 out["transaction_type"] = out.get("transaction_type") or "WAGER"
+                out["currency"] = "USD"
+                out["payment_method"] = "CHIPS"
+                out["location"] = out.get("location") or "Gaming floor"
                 if out.get("created_at") is not None:
                     out["created_at"] = _iso(out["created_at"])
                 if out.get("amount") is not None:
@@ -336,7 +517,7 @@ def _lookup_transaction(transaction_id: str | None) -> dict[str, Any]:
             row = conn.execute(
                 text(
                     """
-                    SELECT amount, direction AS transaction_type, created_at
+                    SELECT amount, direction AS transaction_type, location, created_at
                     FROM chip_transactions WHERE chip_txn_id = :tid LIMIT 1
                     """
                 ),
@@ -344,6 +525,10 @@ def _lookup_transaction(transaction_id: str | None) -> dict[str, Any]:
             ).mappings().first()
             if row:
                 out = dict(row)
+                out["currency"] = "USD"
+                out["payment_method"] = "CHIPS"
+                out["location"] = out.get("location") or "Cage"
+                out["transaction_type"] = out.get("transaction_type") or "CHIP"
                 if out.get("created_at") is not None:
                     out["created_at"] = _iso(out["created_at"])
                 if out.get("amount") is not None:
@@ -352,11 +537,49 @@ def _lookup_transaction(transaction_id: str | None) -> dict[str, Any]:
             row = conn.execute(
                 text(
                     """
-                    SELECT amount, direction AS transaction_type, created_at
+                    SELECT amount, direction AS transaction_type, cage_window AS location, created_at
                     FROM cage_transactions WHERE cage_txn_id = :tid LIMIT 1
                     """
                 ),
                 {"tid": tid},
+            ).mappings().first()
+            if row:
+                out = dict(row)
+                out["currency"] = "USD"
+                out["payment_method"] = "CASH"
+                out["location"] = out.get("location") or "Cage"
+                out["transaction_type"] = out.get("transaction_type") or "CAGE"
+                if out.get("created_at") is not None:
+                    out["created_at"] = _iso(out["created_at"])
+                if out.get("amount") is not None:
+                    out["amount"] = float(out["amount"])
+                return out
+    except Exception as exc:  # noqa: BLE001
+        log.debug("transaction lookup failed for %s: %s", transaction_id, exc)
+    return {}
+
+
+def _lookup_latest_transaction(player_id: str) -> dict[str, Any]:
+    """Fallback: most recent txn for a player when id join misses."""
+    if not player_id:
+        return {}
+    try:
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(database_url(), pool_pre_ping=True)
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT amount, txn_type AS transaction_type, currency, location,
+                           payment_method, created_at, transaction_id
+                    FROM transactions
+                    WHERE player_id = :pid
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"pid": player_id},
             ).mappings().first()
             if row:
                 out = dict(row)
@@ -366,7 +589,7 @@ def _lookup_transaction(transaction_id: str | None) -> dict[str, Any]:
                     out["amount"] = float(out["amount"])
                 return out
     except Exception as exc:  # noqa: BLE001
-        log.debug("transaction lookup failed for %s: %s", transaction_id, exc)
+        log.debug("latest txn lookup failed for %s: %s", player_id, exc)
     return {}
 
 def hydrate_live_events_from_db(limit: int = 100) -> int:
@@ -396,11 +619,27 @@ def hydrate_live_events_from_db(limit: int = 100) -> int:
         return 0
 
 
+def _enrich_alert_tx_fields(alert: dict[str, Any]) -> dict[str, Any]:
+    """Ensure alerts always expose Time/Type/Amount for the Investigate Alerts table."""
+    if not isinstance(alert, dict):
+        return alert
+    tid = str(alert.get("transaction_id") or "") or None
+    need = alert.get("amount") is None or not alert.get("transaction_type")
+    tx = _lookup_transaction(tid) if need and tid else {}
+    fields = _resolve_tx_fields(tx=tx, source=alert, player_id=str(alert.get("player_id") or "") or None)
+    alert["amount"] = fields["amount"]
+    alert["transaction_type"] = fields["transaction_type"]
+    alert["currency"] = fields["currency"]
+    alert["created_at"] = _nz(alert.get("created_at"), fields.get("created_at") or datetime.now(timezone.utc).isoformat())
+    return alert
+
+
 def _ingest_alert(alert: dict[str, Any]) -> None:
     aid = str(alert.get("alert_id") or "")
     if not aid or aid in _ALERT_IDS:
         return
     _ALERT_IDS.add(aid)
+    alert = _enrich_alert_tx_fields(dict(alert))
     ALERTS.insert(0, alert)
     pid = str(alert.get("player_id") or "")
     if pid:
@@ -414,22 +653,16 @@ def _ingest_alert(alert: dict[str, Any]) -> None:
     tx = _lookup_transaction(str(alert.get("transaction_id") or "") or None)
     if eid and eid in _EVENT_IDS:
         # Risk row may already be on Live Monitor without Type/Amount — backfill.
+        enriched = _live_item_from_alert(alert, tx)
         for existing in EVENTS:
             ev = existing.get("event") or {}
             if str(ev.get("event_id") or ev.get("transaction_id") or "") != eid:
                 continue
-            if tx.get("amount") is not None and ev.get("amount") is None:
-                ev["amount"] = tx.get("amount")
-            if tx.get("transaction_type") or tx.get("event_type"):
-                ev.setdefault(
-                    "transaction_type",
-                    tx.get("transaction_type") or tx.get("event_type"),
-                )
-                ev.setdefault(
-                    "event_type",
-                    tx.get("event_type") or tx.get("transaction_type"),
-                )
-            existing["event"] = ev
+            existing["event"] = {**(existing.get("event") or {}), **(enriched.get("event") or {})}
+            existing["risk"] = {**(existing.get("risk") or {}), **(enriched.get("risk") or {})}
+            existing["rules"] = enriched.get("rules") or existing.get("rules")
+            existing["alert"] = enriched.get("alert") or existing.get("alert")
+            existing["status"] = enriched.get("status") or existing.get("status") or "OPEN"
             break
         return
     _push_live_event(_live_item_from_alert(alert, tx))
@@ -1687,12 +1920,20 @@ def metrics_summary():
 @app.get("/api/v1/alerts")
 def list_alerts(status: Optional[str] = None, limit: int = Query(50, ge=1, le=500)):
     REQUESTS.labels(endpoint="alerts").inc()
-    if PIPELINE_MODE == "cdc":
+    # Only hydrate from DB when memory is empty (Kafka consumer keeps it warm).
+    if PIPELINE_MODE == "cdc" and len(ALERTS) == 0:
         hydrate_alerts_from_db()
     items = ALERTS
     if status:
         items = [a for a in items if a["status"] == status]
-    return {"items": items[:limit], "total": len(items)}
+    # Enrich Type/Amount only when missing — avoid N DB lookups on every poll.
+    out: list[dict[str, Any]] = []
+    for a in items[:limit]:
+        if a.get("amount") is not None and a.get("transaction_type"):
+            out.append(a)
+        else:
+            out.append(_enrich_alert_tx_fields(dict(a)))
+    return {"items": out, "total": len(items)}
 
 
 @app.get("/api/v1/alerts/{alert_id}")
@@ -1716,6 +1957,425 @@ def patch_alert(alert_id: str, body: AlertPatch):
             ALERTS_GAUGE.set(sum(1 for x in ALERTS if x["status"] == "OPEN"))
             return a
     raise HTTPException(404, "alert not found")
+
+
+_RULE_PLAIN: dict[str, str] = {
+    "AML-001": "Several cash deposits sat just under the reporting limit — that can mean money was split on purpose to avoid paperwork.",
+    "AML-002": "A large amount came in, almost none was gambled, then most of it left. That looks more like moving money than playing.",
+    "AML-003": "Money came in and went out again very quickly — a classic fast in-and-out pattern.",
+    "AML-004": "Chip and cage cash moves were mixed in a way that can hide where the money came from.",
+    "AML-005": "The same phone or device was used by more than one player account.",
+    "AML-006": "Activity jumped between places too fast for normal travel.",
+    "AML-007": "This spend is very different from how this player usually behaves.",
+    "AML-008": "One transaction is much larger than normal for this player.",
+    "AML-009": "Daily cash activity hit the amount that must be reported to regulators.",
+    "AML-010": "Several cage cash moves sit in the “just under the limit” range.",
+    "AML-011": "Many transactions happened in a short time.",
+    "AML-012": "Several different payment methods were used in one day.",
+    "AML-013": "A large wire came in, then cash went out with little real play in between.",
+    "AML-014": "A large ticket-in / ticket-out move looked unusual.",
+    "AML-015": "This player is on a watchlist or is a politically exposed person, so extra care is required.",
+}
+
+_TX_PLAIN: dict[str, str] = {
+    "CASH_IN": "cash deposit",
+    "CASH_OUT": "cash withdrawal",
+    "BUY_IN": "table buy-in",
+    "WIRE_IN": "incoming wire",
+    "WIRE_OUT": "outgoing wire",
+    "BLACKJACK": "blackjack wager",
+    "ROULETTE": "roulette wager",
+    "SLOTS": "slots play",
+    "TITO_ISSUE": "ticket issue",
+    "TITO_REDEEM": "ticket redeem",
+    "DEPOSIT": "deposit",
+    "WITHDRAWAL": "withdrawal",
+}
+
+
+def _friendly_tx(tx_type: str) -> str:
+    key = str(tx_type or "TRANSACTION").upper()
+    return _TX_PLAIN.get(key) or key.replace("_", " ").lower()
+
+
+def _friendly_risk(level: str) -> str:
+    return {
+        "CRITICAL": "very high concern — needs attention now",
+        "HIGH": "high concern — review soon",
+        "MEDIUM": "medium concern — worth a look",
+        "LOW": "low concern",
+    }.get(str(level or "").upper(), "an unknown risk level")
+
+
+def _rule_plain(hit: dict[str, Any]) -> str:
+    rid = str(hit.get("rule_id") or "")
+    if rid in _RULE_PLAIN:
+        return _RULE_PLAIN[rid]
+    desc = str(hit.get("description") or "").strip()
+    if desc and "{" not in desc and len(desc) < 180:
+        return desc
+    name = hit.get("rule_name") or rid or "a compliance check"
+    return f"Our system flagged this under “{name}”."
+
+
+def _human_plain_explanations(
+    *,
+    risk_level: str,
+    score: float,
+    hits: list[dict[str, Any]],
+    raw_explanations: list[Any],
+    amount: float,
+    tx_type: str,
+    player_id: str,
+) -> list[str]:
+    """Short everyday sentences — no scores, evidence dumps, or rule IDs."""
+    plain: list[str] = []
+    money = f"${amount:,.2f}"
+    plain.append(
+        f"{player_id} did a {_friendly_tx(tx_type)} for {money}."
+    )
+    plain.append(f"We see this as {_friendly_risk(risk_level)}.")
+    if hits:
+        if len(hits) == 1:
+            plain.append(_rule_plain(hits[0]))
+        else:
+            plain.append(
+                f"Several checks fired ({len(hits)}). Together they suggest this may not be normal play."
+            )
+            for h in hits[:5]:
+                plain.append(_rule_plain(h))
+    else:
+        plain.append("No single named rule stood out, but the overall pattern still looked unusual.")
+    if score >= 0.85:
+        plain.append("The overall risk score is very high, so this should not be ignored.")
+    elif score >= 0.55:
+        plain.append("The overall risk score is high enough that we opened a case.")
+    for raw in raw_explanations or []:
+        text = raw if isinstance(raw, str) else ""
+        if not isinstance(text, str):
+            continue
+        text = text.strip()
+        if text.startswith("ML model"):
+            plain.append("Our computer model thinks this spending looks unusual for this player.")
+        elif "Behavioral adapter" in text:
+            plain.append("This activity does not match how this player normally plays.")
+        elif "KYC" in text:
+            plain.append("Customer checks (watchlist / PEP / shared device) raised extra concern.")
+    # Dedupe
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in plain:
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
+def _find_live_event(*ids: str) -> dict[str, Any] | None:
+    wanted = {str(i) for i in ids if i}
+    if not wanted:
+        return None
+    for item in EVENTS:
+        ev = item.get("event") or {}
+        keys = {
+            str(ev.get("event_id") or ""),
+            str(ev.get("transaction_id") or ""),
+            str((item.get("alert") or {}).get("alert_id") or ""),
+        }
+        if wanted & keys:
+            return item
+    return None
+
+
+def _find_alert_in_memory(case_id: str) -> dict[str, Any] | None:
+    for a in ALERTS:
+        if str(a.get("alert_id") or "") == case_id:
+            return a
+        if str(a.get("event_id") or "") == case_id or str(a.get("transaction_id") or "") == case_id:
+            return a
+    return None
+
+
+def _build_case_detail(case_id: str) -> dict[str, Any]:
+    """Case Detail payload for Live Monitor Investigate (summary + JSON)."""
+    # Prefer in-memory alert/event — avoid full DB hydrate on every click.
+    alert = _find_alert_in_memory(case_id)
+    if alert is None and PIPELINE_MODE == "cdc":
+        # Targeted miss only: one lightweight hydrate, then re-check.
+        hydrate_alerts_from_db()
+        alert = _find_alert_in_memory(case_id)
+        if len(EVENTS) == 0:
+            hydrate_live_events_from_db()
+
+    live = _find_live_event(
+        case_id,
+        str((alert or {}).get("event_id") or ""),
+        str((alert or {}).get("transaction_id") or ""),
+        str((alert or {}).get("alert_id") or ""),
+    )
+    # Only re-enrich live row when Type/Amount still missing (skip extra DB round-trips).
+    if live:
+        ev = live.get("event") or {}
+        if ev.get("amount") is None or not ev.get("transaction_type"):
+            live = _enrich_live_item_inplace(dict(live))
+        else:
+            live = dict(live)
+
+    if alert is None and live:
+        # Synthetic case from scored live row (risk arrived before alert persist)
+        ev = live.get("event") or {}
+        risk = live.get("risk") or {}
+        alert = {
+            "alert_id": (live.get("alert") or {}).get("alert_id")
+            or f"CASE-{ev.get('event_id') or ev.get('transaction_id') or case_id}",
+            "player_id": ev.get("player_id"),
+            "transaction_id": ev.get("transaction_id"),
+            "event_id": ev.get("event_id"),
+            "correlation_id": ev.get("correlation_id"),
+            "risk_level": risk.get("risk_level") or "MEDIUM",
+            "status": live.get("status") or ev.get("status") or "OPEN",
+            "title": (live.get("alert") or {}).get("title") or "Live risk case",
+            "summary": (risk.get("explanations") or ["Scored transaction under review."])[0],
+            "score": risk.get("final_score") or 0.0,
+            "rule_hits": risk.get("rule_hits") or [],
+            "explanations": risk.get("explanations") or [],
+            "created_at": ev.get("timestamp"),
+            "updated_at": ev.get("timestamp"),
+        }
+
+    if alert is None:
+        raise HTTPException(404, f"case not found: {case_id}")
+
+    # Skip DB txn lookup when alert/live already carry Type + Amount.
+    src = (live or {}).get("event") or alert
+    have_amount = src.get("amount") is not None or alert.get("amount") is not None
+    have_type = bool(src.get("transaction_type") or src.get("event_type") or alert.get("transaction_type"))
+    tx: dict[str, Any] = {}
+    if not (have_amount and have_type):
+        tx = _lookup_transaction(str(alert.get("transaction_id") or "") or None)
+    if live:
+        fields = _resolve_tx_fields(tx=tx, source=live.get("event") or {}, player_id=str(alert.get("player_id") or ""))
+    else:
+        fields = _resolve_tx_fields(tx=tx, source=alert, player_id=str(alert.get("player_id") or ""))
+
+    hits = _normalize_rule_hits(alert.get("rule_hits") or (live or {}).get("risk", {}).get("rule_hits") or [])
+    try:
+        score = float(alert.get("score") if alert.get("score") is not None else (live or {}).get("risk", {}).get("final_score") or 0)
+    except (TypeError, ValueError):
+        score = 0.0
+    risk_level = str(_nz(alert.get("risk_level"), "MEDIUM")).upper()
+    status = str(_nz(alert.get("status") or (live or {}).get("status"), "OPEN")).upper()
+    player_id = str(_nz(alert.get("player_id"), "UNKNOWN"))
+    tx_type = fields["transaction_type"]
+    amount = float(fields["amount"])
+    raw_explanations = list(alert.get("explanations") or [])
+    if live and (live.get("risk") or {}).get("explanations"):
+        for e in live["risk"]["explanations"]:
+            if e not in raw_explanations:
+                raw_explanations.append(e)
+    if not raw_explanations and alert.get("summary"):
+        raw_explanations = [alert["summary"]]
+
+    plain = _human_plain_explanations(
+        risk_level=risk_level,
+        score=score,
+        hits=hits,
+        raw_explanations=raw_explanations,
+        amount=amount,
+        tx_type=tx_type,
+        player_id=player_id,
+    )
+
+    title = _nz(alert.get("title") or alert.get("display_label"), "Suspicious activity case")
+    tx_words = _friendly_tx(tx_type)
+    money = f"${amount:,.2f}"
+    place = fields.get("location") or "the casino"
+    if hits:
+        why = (
+            _rule_plain(hits[0])
+            if len(hits) == 1
+            else f"Several checks fired ({len(hits)}). Together they suggest this may not be normal play."
+        )
+    else:
+        why = "The overall pattern looked unusual compared with typical play."
+    if status in {"OPEN", "INVESTIGATING", "MONITORING"}:
+        if risk_level in {"CRITICAL", "HIGH"}:
+            next_step = (
+                "Check who this player is, look at linked devices in Network, "
+                "then escalate if it still looks wrong — or mark false positive if it is clearly normal play."
+            )
+        else:
+            next_step = (
+                "Skim recent activity for this player. Escalate only if something still looks wrong; "
+                "otherwise close or mark false positive."
+            )
+    else:
+        next_step = f"This case is already marked {status.replace('_', ' ').title()}."
+    summary_block = {
+        "headline": title,
+        "in_short": f"{player_id} did a {tx_words} for {money}. We see this as {_friendly_risk(risk_level)}.",
+        "what_happened": f"{player_id} completed a {tx_words} of {money} at {place}.",
+        "why_it_matters": why,
+        "recommended_next_step": next_step,
+        "plain_explanations": plain,
+        "rule_meanings": [
+            {
+                "name": str(h.get("rule_name") or h.get("rule_id") or "Check"),
+                "meaning": _rule_plain(h),
+            }
+            for h in hits[:6]
+        ],
+    }
+
+    raw_payload = {
+        "alert": alert,
+        "transaction": {
+            "transaction_id": _nz(alert.get("transaction_id"), "TXN-UNKNOWN"),
+            "player_id": player_id,
+            "amount": amount,
+            "transaction_type": tx_type,
+            "currency": fields["currency"],
+            "location": fields["location"],
+            "payment_method": fields["payment_method"],
+            "timestamp": _nz(
+                (live or {}).get("event", {}).get("timestamp") or alert.get("created_at"),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        },
+        "risk": (live or {}).get("risk")
+        or {
+            "risk_level": risk_level,
+            "final_score": score,
+            "rule_hits": hits,
+            "explanations": raw_explanations,
+        },
+        "live_event": live,
+        "rule_hits": hits,
+        "status": status,
+    }
+
+    return {
+        "case_id": str(alert.get("alert_id") or case_id),
+        "alert_id": str(alert.get("alert_id") or case_id),
+        "player_id": player_id,
+        "transaction_id": _nz(alert.get("transaction_id"), "TXN-UNKNOWN"),
+        "event_id": _nz(alert.get("event_id"), alert.get("transaction_id") or case_id),
+        "status": status,
+        "risk_level": risk_level,
+        "score": score,
+        "title": title,
+        "amount": amount,
+        "transaction_type": tx_type,
+        "currency": fields["currency"],
+        "location": fields["location"],
+        "payment_method": fields["payment_method"],
+        "created_at": _nz(alert.get("created_at"), datetime.now(timezone.utc).isoformat()),
+        "updated_at": _nz(alert.get("updated_at") or alert.get("created_at"), datetime.now(timezone.utc).isoformat()),
+        "summary": summary_block,
+        "explanations": plain,
+        "rule_hits": hits,
+        "raw": raw_payload,
+    }
+
+
+@app.get("/api/v1/cases/{case_id}")
+def get_case_detail(case_id: str):
+    """Human-readable Case Detail (+ beautified JSON payload) for Live Investigate."""
+    REQUESTS.labels(endpoint="case_detail").inc()
+    return _build_case_detail(case_id)
+
+
+class ClearLiveIn(BaseModel):
+    seed: bool = True
+    scenarios: list[str] = Field(
+        default_factory=lambda: ["structuring", "rapid_wire", "shared_device"]
+    )
+
+
+@app.post("/api/v1/live/clear")
+def clear_live_transactions(body: ClearLiveIn | None = None):
+    """Wipe Live Monitor buffer (+ DB alerts) and optionally inject fresh full-field demo rows."""
+    REQUESTS.labels(endpoint="live_clear").inc()
+    body = body or ClearLiveIn()
+    cleared_events = len(EVENTS)
+    cleared_alerts = len(ALERTS)
+    EVENTS.clear()
+    _EVENT_IDS.clear()
+    ALERTS.clear()
+    _ALERT_IDS.clear()
+    PLAYERS.clear()
+    ALERTS_GAUGE.set(0)
+
+    db_deleted = {"alerts": 0, "transactions": 0, "wagers": 0, "cage": 0, "chips": 0}
+    try:
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(database_url(), pool_pre_ping=True)
+        with engine.begin() as conn:
+            try:
+                r = conn.execute(text("DELETE FROM aml.alerts"))
+                db_deleted["alerts"] = r.rowcount or 0
+            except Exception as exc:  # noqa: BLE001
+                log.warning("clear aml.alerts failed: %s", exc)
+            # Fresh demo surface: remove recent gaming activity (keep players/KYC).
+            for table, key in (
+                ("transactions", "transactions"),
+                ("wagers", "wagers"),
+                ("cage_transactions", "cage"),
+                ("chip_transactions", "chips"),
+            ):
+                try:
+                    r = conn.execute(text(f"DELETE FROM {table}"))
+                    db_deleted[key] = r.rowcount or 0
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("clear %s failed: %s", table, exc)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("live clear DB wipe failed: %s", exc)
+
+    seeded: list[dict[str, Any]] = []
+    if body.seed:
+        for raw_name in body.scenarios or []:
+            name = str(raw_name).strip().lower().replace("-", "_")
+            if name not in EXPECTED:
+                seeded.append({"scenario": name, "error": f"unknown scenario; choose from {list(EXPECTED)}"})
+                continue
+            try:
+                resolved_seed = int(time.time()) + len(seeded)
+                events = build_events(name, resolved_seed)
+                # Guarantee non-null display fields on every injected row
+                for e in events:
+                    e["amount"] = float(e["amount"]) if e.get("amount") is not None else 100.0
+                    e["transaction_type"] = (
+                        e.get("transaction_type") or e.get("event_type") or "CASH_IN"
+                    )
+                    e["event_type"] = e.get("event_type") or e["transaction_type"]
+                    e["currency"] = e.get("currency") or "USD"
+                    e["location"] = e.get("location") or "Cage 01"
+                    e["payment_method"] = e.get("payment_method") or e.get("channel") or "CASH"
+                    e["channel"] = e.get("channel") or e["payment_method"]
+                    e["player_id"] = e.get("player_id") or f"C{uuid4().hex[:5].upper()}"
+                    e["transaction_id"] = e.get("transaction_id") or f"TXN-{uuid4().hex[:12].upper()}"
+                if PIPELINE_MODE == "cdc":
+                    written = write_events_to_postgres(events)
+                    seeded.append({"scenario": name, "written": len(written), "seed": resolved_seed})
+                else:
+                    for e in events:
+                        process_event(e)
+                    seeded.append({"scenario": name, "written": len(events), "seed": resolved_seed})
+            except Exception as exc:  # noqa: BLE001
+                log.warning("seed scenario %s failed: %s", name, exc)
+                seeded.append({"scenario": name, "error": str(exc)})
+
+    _broadcast({"type": "event", "data": {"cleared": True}})
+    return {
+        "ok": True,
+        "cleared_live_events": cleared_events,
+        "cleared_memory_alerts": cleared_alerts,
+        "db_deleted": db_deleted,
+        "seeded": seeded,
+        "note": "Live buffer cleared. Fresh CDC rows will appear as the pipeline scores them.",
+    }
 
 
 def _serialize_value(value: Any) -> Any:
@@ -2152,12 +2812,61 @@ def player_360(player_id: str):
     }
 
 
+def _enrich_live_item_inplace(item: dict[str, Any]) -> dict[str, Any]:
+    """Ensure Type/Amount/status are never empty on read."""
+    if not isinstance(item, dict):
+        return item
+    ev = dict(item.get("event") or {})
+    tid = str(ev.get("transaction_id") or "") or None
+    pid = str(ev.get("player_id") or "") or None
+    need_tx = ev.get("amount") is None or not ev.get("transaction_type") or not ev.get("event_type")
+    tx = _lookup_transaction(tid) if need_tx and tid else {}
+    fields = _resolve_tx_fields(tx=tx, source=ev, player_id=pid)
+    ev["amount"] = fields["amount"]
+    ev["transaction_type"] = fields["transaction_type"]
+    ev["event_type"] = fields["event_type"]
+    ev["currency"] = fields["currency"]
+    ev["location"] = fields["location"]
+    ev["payment_method"] = fields["payment_method"]
+    ev["player_id"] = _nz(ev.get("player_id"), "UNKNOWN")
+    ev["transaction_id"] = _nz(ev.get("transaction_id"), "TXN-UNKNOWN")
+    ev["event_id"] = _nz(ev.get("event_id"), ev["transaction_id"])
+    ev["timestamp"] = _nz(ev.get("timestamp"), datetime.now(timezone.utc).isoformat())
+    matched = item.get("alert") or _match_alert_for_event(ev)
+    status = str(
+        _nz(
+            ev.get("status") or item.get("status") or (matched or {}).get("status"),
+            "OPEN",
+        )
+    ).upper()
+    ev["status"] = status
+    item["event"] = ev
+    item["status"] = status
+    if matched and not item.get("alert"):
+        item["alert"] = {
+            "alert_id": matched.get("alert_id"),
+            "title": matched.get("title") or matched.get("display_label") or "AML alert",
+            "status": status,
+        }
+    risk = dict(item.get("risk") or {})
+    risk["risk_level"] = str(_nz(risk.get("risk_level"), "LOW")).upper()
+    if risk.get("final_score") is None:
+        risk["final_score"] = 0.0
+    if not risk.get("explanations"):
+        risk["explanations"] = ["No detailed explanation was attached; review rules and score drivers."]
+    risk["rule_hits"] = _normalize_rule_hits(risk.get("rule_hits") or (item.get("rules") or {}).get("hits") or [])
+    item["risk"] = risk
+    item["rules"] = {"hits": risk["rule_hits"], **(item.get("rules") or {})}
+    return item
+
+
 @app.get("/api/v1/events/live")
 def live_events(limit: int = Query(50, ge=1, le=500)):
     REQUESTS.labels(endpoint="events_live").inc()
     if PIPELINE_MODE == "cdc" and len(EVENTS) == 0:
         hydrate_live_events_from_db(limit=max(limit, 100))
-    return {"items": list(EVENTS)[:limit]}
+    items = [_enrich_live_item_inplace(dict(x)) for x in list(EVENTS)[:limit]]
+    return {"items": items}
 
 
 @app.post("/api/v1/demo/inject")
@@ -2324,14 +3033,67 @@ def _build_investigation_network(alert: dict[str, Any]) -> dict[str, Any]:
     hidden: list[dict[str, Any]] = []
 
     def add_node(nid: str, kind: str, label: str, **props: Any) -> None:
+        defaults: dict[str, Any] = {
+            "alert": {
+                "risk_level": "MEDIUM",
+                "score": 0.0,
+                "status": "OPEN",
+                "summary": "No summary available",
+                "created_at": "—",
+            },
+            "player": {
+                "player_id": "—",
+                "external_ref": "—",
+                "email": "—",
+                "phone": "—",
+                "risk_level": "LOW",
+                "score": 0.0,
+                "kyc_tier": "Standard",
+                "is_pep": False,
+                "is_sanctioned": False,
+            },
+            "device": {
+                "fingerprint": "—",
+                "device_type": "UNKNOWN",
+                "os_name": "—",
+                "is_trusted": False,
+                "last_seen_at": "—",
+            },
+            "payment": {
+                "provider": "—",
+                "last4": "0000",
+                "country": "—",
+                "method_type": "UNKNOWN",
+                "is_verified": False,
+            },
+            "location": {"location": "Casino floor"},
+            "rule": {"severity": "MEDIUM", "score": 0.5, "evidence": "—"},
+            "watchlist": {
+                "is_pep": False,
+                "is_sanctioned": False,
+                "risk_rating": "STANDARD",
+                "kyc_grade": "Green",
+            },
+        }.get(kind, {})
+        filled = {**defaults}
+        for k, v in props.items():
+            if v is None or (isinstance(v, str) and not str(v).strip()):
+                continue
+            filled[k] = v
+        # Ensure every default key exists even if caller passed None
+        for k, dv in defaults.items():
+            if filled.get(k) is None:
+                filled[k] = dv
         if nid in nodes:
-            nodes[nid]["props"].update({k: v for k, v in props.items() if v is not None})
+            nodes[nid]["props"].update(filled)
+            if label:
+                nodes[nid]["label"] = label
             return
         nodes[nid] = {
             "id": nid,
             "kind": kind,
-            "label": label,
-            "props": {k: v for k, v in props.items() if v is not None},
+            "label": label or kind,
+            "props": filled,
         }
 
     def add_edge(src: str, dst: str, rel: str, *, hidden_gap: bool = False, **props: Any) -> None:
@@ -2626,52 +3388,6 @@ def get_investigation_network(investigation_id: str):
     return _build_investigation_network(alert)
 
 
-@app.get("/api/v1/cases")
-def list_cases(limit: int = 50):
-    """Cases derived from open HIGH/CRITICAL alerts — empty when none (honest)."""
-    items = []
-    for a in ALERTS:
-        if str(a.get("risk_level", "")).upper() not in ("HIGH", "CRITICAL"):
-            continue
-        if str(a.get("status", "")).upper() in ("CLOSED", "FALSE_POSITIVE"):
-            continue
-        items.append(
-            {
-                "case_id": a.get("alert_id"),
-                "alert_id": a.get("alert_id"),
-                "player_id": a.get("player_id"),
-                "priority": a.get("risk_level"),
-                "status": a.get("status") or "OPEN",
-                "score": a.get("score"),
-                "title": a.get("title") or a.get("explanation") or "AML case",
-                "created_at": a.get("created_at"),
-            }
-        )
-    items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-    return {"items": items[:limit], "source": "alerts"}
-
-
-@app.get("/api/v1/sars")
-def list_sars(limit: int = 50):
-    """SAR drafts from CRITICAL alerts — empty when none."""
-    items = []
-    for a in ALERTS:
-        if str(a.get("risk_level", "")).upper() != "CRITICAL":
-            continue
-        items.append(
-            {
-                "sar_id": f"SAR-{a.get('alert_id')}",
-                "alert_id": a.get("alert_id"),
-                "player_id": a.get("player_id"),
-                "status": "DRAFT",
-                "narrative": a.get("explanation") or "Critical AML alert pending SAR review",
-                "created_at": a.get("created_at"),
-            }
-        )
-    items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-    return {"items": items[:limit], "source": "alerts"}
-
-
 @app.get("/api/v1/settings/weights")
 def score_weights():
     from risk_aggregator import _weights
@@ -2776,20 +3492,20 @@ def get_simulator_settings():
     REQUESTS.labels(endpoint="settings_simulator").inc()
     try:
         data = _read_configmap_data()
-        interval = float(data.get("SIMULATOR_INTERVAL_SEC") or os.getenv("SIMULATOR_INTERVAL_SEC", "30"))
+        interval = float(data.get("SIMULATOR_INTERVAL_SEC") or os.getenv("SIMULATOR_INTERVAL_SEC", "60"))
         enabled_raw = (data.get("SIMULATOR_ENABLED") or os.getenv("SIMULATOR_ENABLED", "true")).lower()
         enabled = enabled_raw in {"1", "true", "yes", "on"}
         return {
             "interval_sec": interval,
             "enabled": enabled,
             "source": "casino-config",
-            "note": "One background transaction every interval_sec when enabled. Demo scenarios are separate.",
+            "note": "One background transaction every interval_sec when enabled (default 60s = 1/min). Demo scenarios are separate.",
         }
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         # Fallback to process env if RBAC/API unavailable
-        interval = float(os.getenv("SIMULATOR_INTERVAL_SEC", "30"))
+        interval = float(os.getenv("SIMULATOR_INTERVAL_SEC", "60"))
         enabled = os.getenv("SIMULATOR_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
         return {
             "interval_sec": interval,
@@ -2817,7 +3533,7 @@ def patch_simulator_settings(body: SimulatorSettingsIn):
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to update ConfigMap: {exc}") from exc
-    interval = float(data.get("SIMULATOR_INTERVAL_SEC") or "30")
+    interval = float(data.get("SIMULATOR_INTERVAL_SEC") or "60")
     enabled = (data.get("SIMULATOR_ENABLED") or "true").lower() in {"1", "true", "yes", "on"}
     return {
         "interval_sec": interval,

@@ -55,9 +55,22 @@ def evaluate_rules(
     transaction_id: str | None = None,
 ) -> RuleResult:
     hits: list[RuleHit] = []
-    amount = float(event.get("amount") or 0)
-    tx_type = (event.get("transaction_type") or event.get("event_type") or "").upper()
-    payment = (event.get("payment_method") or event.get("channel") or "").upper()
+    amount = float(event.get("amount") if event.get("amount") is not None else 0)
+    tx_type = (
+        event.get("transaction_type")
+        or event.get("event_type")
+        or (event.get("metadata") or {}).get("txn_type")
+        or "TRANSACTION"
+    )
+    tx_type = str(tx_type).upper()
+    payment = str(
+        event.get("payment_method")
+        or event.get("channel")
+        or (event.get("metadata") or {}).get("payment_method")
+        or "UNKNOWN"
+    ).upper()
+    location = str(event.get("location") or "Casino floor")
+    currency = str(event.get("currency") or "USD")
     now = datetime.now(timezone.utc)
 
     is_cash = tx_type in ("CASH_IN", "CASH_OUT") or payment == "CASH" or (
@@ -389,6 +402,11 @@ def evaluate_rules(
         timestamp=now,
         hits=hits,
         aggregate_score=agg,
+        amount=round(amount, 2),
+        transaction_type=tx_type or "TRANSACTION",
+        currency=currency,
+        location=location,
+        payment_method=payment or "UNKNOWN",
     )
 
 

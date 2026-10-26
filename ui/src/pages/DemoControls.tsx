@@ -100,9 +100,9 @@ export default function DemoControls() {
       setResult(final)
       setStatus(
         alerts.length
-          ? `Done — ${alerts.length} alert(s). Open Live Monitor / Investigation.`
+          ? `Done — ${alerts.length} alert(s). Open Live Monitor to Investigate.`
           : expectsAlert
-            ? 'Injected, but no alert yet — pipeline may still be catching up; refresh Investigation shortly.'
+            ? 'Injected, but no alert yet — pipeline may still be catching up; refresh Live Monitor shortly.'
             : 'Done — benign transaction injected.',
       )
     } catch (e: any) {

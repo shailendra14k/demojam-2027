@@ -105,6 +105,11 @@ class RuleResult(BaseModel):
     timestamp: datetime
     hits: list[RuleHit] = Field(default_factory=list)
     aggregate_score: float = 0.0
+    amount: Optional[float] = None
+    transaction_type: Optional[str] = None
+    currency: Optional[str] = "USD"
+    location: Optional[str] = None
+    payment_method: Optional[str] = None
 
 
 class MLPrediction(BaseModel):
@@ -146,6 +151,11 @@ class RiskAssessment(BaseModel):
     rule_hits: list[RuleHit] = Field(default_factory=list)
     explanations: list[str] = Field(default_factory=list)
     weights: dict[str, float] = Field(default_factory=dict)
+    amount: Optional[float] = None
+    transaction_type: Optional[str] = None
+    currency: Optional[str] = "USD"
+    location: Optional[str] = None
+    payment_method: Optional[str] = None
 
 
 class Alert(BaseModel):
