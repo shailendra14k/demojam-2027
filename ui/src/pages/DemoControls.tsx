@@ -100,10 +100,10 @@ export default function DemoControls() {
       setResult(final)
       setStatus(
         alerts.length
-          ? `Done — ${alerts.length} alert(s). Open Live Monitor to Investigate.`
+          ? `Done — Live now shows only this scenario (${alerts.length} alert(s)). Open Live.`
           : expectsAlert
-            ? 'Injected, but no alert yet — pipeline may still be catching up; refresh Live Monitor shortly.'
-            : 'Done — benign transaction injected.',
+            ? 'Injected (Live replaced). Waiting for CDC scores — open Live shortly.'
+            : 'Done — Live replaced with this benign transaction.',
       )
     } catch (e: any) {
       setStatus(`Failed: ${e?.message || e}`)
@@ -117,7 +117,10 @@ export default function DemoControls() {
     <div>
       <section className="hero">
         <h2>Demo controls</h2>
-        <p>Inject deterministic AML scenarios into the live scoring pipeline. Suspicious runs surface alerts without a manual page refresh once CDC drains.</p>
+        <p>
+          Each button clears Live first, then injects <strong>only that scenario</strong> so the Live
+          page shows those transactions alone. Background simulator is paused while you demo.
+        </p>
       </section>
       <div className="grid">
         {ordered.map((name) => {

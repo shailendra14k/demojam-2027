@@ -25,7 +25,6 @@ const SEVERITY_COLORS: Record<string, string> = {
 }
 
 const CHART_TEAL = '#ee0000'
-const CHART_AMBER = '#f0ab00'
 const CHART_MUTED = '#6a6e73'
 const TOOLTIP_STYLE = {
   background: '#ffffff',
@@ -61,31 +60,21 @@ function useCountUp(target: number, duration = 700) {
 function MetricValue({
   value,
   decimals = 0,
-  suffix = '',
 }: {
   value: number | null | undefined
   decimals?: number
-  suffix?: string
 }) {
   const n = typeof value === 'number' && Number.isFinite(value) ? value : 0
   const animated = useCountUp(n)
   const display =
     decimals > 0 ? animated.toFixed(decimals) : Math.round(animated).toLocaleString()
-  return (
-    <div className="metric">
-      {display}
-      {suffix}
-    </div>
-  )
-}
-
-function StatusPill({ ok, label }: { ok?: boolean; label: string }) {
-  return <span className={`status-pill ${ok ? 'ok' : 'bad'}`}>{label}</span>
+  return <div className="metric">{display}</div>
 }
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null)
   const [events, setEvents] = useState<any[]>([])
+  const [industry, setIndustry] = useState<any>(null)
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
@@ -95,24 +84,13 @@ export default function Dashboard() {
         .events()
         .then((r) => setEvents((r.items || []).slice(0, 8)))
         .catch(console.error)
+      api.industrySettings().then(setIndustry).catch(() => undefined)
       setTick((t) => t + 1)
     }
     load()
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
   }, [])
-
-  const stages = data?.pipeline_stages?.length
-    ? data.pipeline_stages
-    : [
-        { name: 'DATABASE', ok: true },
-        { name: 'CDC', ok: true },
-        { name: 'STREAM', ok: true },
-        { name: 'ENRICH', ok: true },
-        { name: 'ANALYZE', ok: true },
-        { name: 'RISK', ok: true },
-        { name: 'ALERT', ok: true },
-      ]
 
   const severityData = useMemo(() => {
     const raw = data?.severity_breakdown || []
@@ -124,7 +102,6 @@ export default function Dashboard() {
   }, [data])
 
   const volumeData = data?.alert_volume || []
-  const histData = data?.risk_histogram || []
   const ruleData = useMemo(
     () =>
       (data?.rule_hit_frequency || []).slice(0, 8).map((d: any) => ({
@@ -133,52 +110,42 @@ export default function Dashboard() {
       })),
     [data],
   )
-  const latencySpark = (data?.latency_samples || []).map((v: number, i: number) => ({
-    i: i + 1,
-    ms: v,
-  }))
 
-  const platform = data?.platform || {}
-  const platformRows = [
-    { key: 'postgres', label: 'PostgreSQL', hint: 'Transactional source' },
-    { key: 'debezium', label: 'Debezium CDC', hint: 'Change data capture' },
-    { key: 'kafka_connect', label: 'Kafka Connect', hint: 'AMQ Streams connector' },
-    { key: 'kafka', label: 'Kafka / AMQ Streams', hint: 'Event backbone' },
-    { key: 'feature_engine', label: 'Feature engine', hint: 'Enrichment' },
-    { key: 'aml_rules_ml', label: 'Rules + ML', hint: 'ANALYZE stage' },
-    { key: 'risk_engine', label: 'Risk engine', hint: 'Score aggregation' },
-    { key: 'alert_service', label: 'Alert service', hint: 'Case generation' },
-  ]
-
-  const elevated = events.filter(
-    (e) => ['HIGH', 'CRITICAL', 'MEDIUM'].includes(String(e.risk?.risk_level || '').toUpperCase()),
+  const elevated = events.filter((e) =>
+    ['HIGH', 'CRITICAL', 'MEDIUM'].includes(String(e.risk?.risk_level || '').toUpperCase()),
   )
+  const pipeOk = data?.cdc_ok !== false && data?.kafka_ok !== false
 
   return (
     <div className="ops-console">
       <section className="ops-header">
         <div>
-          <p className="ops-eyebrow">Red Hat AML · OpenShift CDC path</p>
-          <h2>Investigation console</h2>
+          <p className="ops-eyebrow">Realtime TxnIQ · pattern intelligence</p>
+          <h2>Operations console</h2>
           <p className="ops-sub">
-            Postgres → RH Debezium → AMQ Streams → enrich → rules/ML → risk → alert
+            Patterns over the stream — not one-shot flags.
+            {industry?.label ? (
+              <>
+                {' '}
+                Active pack: <strong>{industry.label}</strong>
+              </>
+            ) : null}
           </p>
         </div>
         <div className="ops-meta">
           <span className="live-dot" />
           <span className="mono">LIVE · poll {tick}</span>
-          <span className="mono muted">
-            mode {data?.pipeline_mode ?? '—'} · AI {data?.ai_mode ?? '—'} · up{' '}
-            {data?.uptime_seconds ?? 0}s
+          <span className={`status-pill ${pipeOk ? 'ok' : 'bad'}`}>
+            {pipeOk ? 'Pipeline OK' : 'Pipeline issue'}
+            {data?.latency_ms != null ? ` · ${data.latency_ms} ms` : ''}
           </span>
+          <Link className="text-link" to="/pipeline">
+            Topology →
+          </Link>
         </div>
       </section>
 
       <section className="kpi-strip" aria-label="Key performance indicators">
-        <div className="kpi">
-          <h3>Tx / sec</h3>
-          <MetricValue value={data?.tx_per_sec} decimals={3} />
-        </div>
         <div className="kpi">
           <h3>Open alerts</h3>
           <MetricValue value={data?.alerts_open} />
@@ -188,57 +155,19 @@ export default function Dashboard() {
           <MetricValue value={data?.alerts_critical} />
         </div>
         <div className="kpi">
-          <h3>High-risk players</h3>
+          <h3>High-risk entities</h3>
           <MetricValue value={data?.high_risk_players} />
         </div>
         <div className="kpi">
-          <h3>Pipeline latency</h3>
-          <MetricValue value={data?.latency_ms} suffix=" ms" />
-        </div>
-        <div className="kpi">
-          <h3>AI / ML latency</h3>
+          <h3>CDC · Kafka</h3>
           <div className="metric metric-sm">
-            {data?.ai_latency_ms ?? '—'}
-            <small>AI {data?.ai_latency_ms ?? '—'} · ML {data?.ml_latency_ms ?? '—'} ms</small>
+            <span className={`status-pill ${data?.cdc_ok ? 'ok' : 'bad'}`}>
+              {data?.cdc_ok ? 'CDC OK' : 'CDC'}
+            </span>{' '}
+            <span className={`status-pill ${data?.kafka_ok ? 'ok' : 'bad'}`}>
+              {data?.kafka_ok ? 'Kafka OK' : 'Kafka'}
+            </span>
           </div>
-        </div>
-        <div className="kpi">
-          <h3>CDC</h3>
-          <StatusPill ok={data?.cdc_ok} label={data?.cdc_ok ? 'OK' : 'DOWN'} />
-          <p className="kpi-detail mono">{data?.cdc_detail || '—'}</p>
-        </div>
-        <div className="kpi">
-          <h3>Kafka</h3>
-          <StatusPill ok={data?.kafka_ok} label={data?.kafka_ok ? 'OK' : 'DOWN'} />
-          <p className="kpi-detail mono">{data?.kafka_detail || '—'}</p>
-        </div>
-      </section>
-
-      <section className="panel pipeline-panel">
-        <div className="panel-head">
-          <h3>Pipeline status</h3>
-          <Link className="text-link" to="/pipeline">
-            Full topology →
-          </Link>
-        </div>
-        <div className="pipeline pipeline-rich">
-          {stages.map((s: any, i: number, arr: any[]) => (
-            <div key={s.name} className="pipe-unit">
-              <div
-                className={`pipe-stage ${s.ok === false ? 'bad' : s.ok === true ? 'ok' : ''}`}
-              >
-                <span className="dot" />
-                <div className="pipe-copy">
-                  <strong>{s.name}</strong>
-                  <span className="mono muted">
-                    {s.detail || '—'}
-                    {s.activity != null ? ` · ${s.activity}` : ''}
-                  </span>
-                </div>
-              </div>
-              {i < arr.length - 1 && <span className="pipe-arrow" aria-hidden />}
-            </div>
-          ))}
         </div>
       </section>
 
@@ -246,7 +175,7 @@ export default function Dashboard() {
         <div className="panel span-4">
           <div className="panel-head">
             <h3>Alert volume</h3>
-            <span className="muted mono">time series</span>
+            <span className="muted mono">over time</span>
           </div>
           <div className="chart-box">
             {volumeData.length ? (
@@ -273,7 +202,7 @@ export default function Dashboard() {
         <div className="panel span-4">
           <div className="panel-head">
             <h3>Severity mix</h3>
-            <span className="muted mono">risk level</span>
+            <span className="muted mono">queue</span>
           </div>
           <div className="chart-box chart-split">
             {severityData.length ? (
@@ -314,39 +243,18 @@ export default function Dashboard() {
 
         <div className="panel span-4">
           <div className="panel-head">
-            <h3>Risk score histogram</h3>
-            <span className="muted mono">0–1</span>
-          </div>
-          <div className="chart-box">
-            {histData.length ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={histData}>
-                  <XAxis dataKey="bucket" tick={{ fill: CHART_MUTED, fontSize: 10 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} width={28} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Bar dataKey="count" fill={CHART_AMBER} radius={[0, 0, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="muted">No score distribution yet.</p>
-            )}
-          </div>
-        </div>
-
-        <div className="panel span-6">
-          <div className="panel-head">
-            <h3>Rule hit frequency</h3>
-            <span className="muted mono">top fired</span>
+            <h3>Pattern rules firing</h3>
+            <span className="muted mono">top hits</span>
           </div>
           <div className="chart-box">
             {ruleData.length ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={ruleData} layout="vertical" margin={{ left: 12 }}>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={ruleData} layout="vertical" margin={{ left: 8 }}>
                   <XAxis type="number" tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis
                     type="category"
                     dataKey="rule_name"
-                    width={140}
+                    width={120}
                     tick={{ fill: '#6a6e73', fontSize: 11, fontFamily: 'Red Hat Display' }}
                     axisLine={false}
                     tickLine={false}
@@ -361,32 +269,11 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="panel span-6">
+        <div className="panel span-12">
           <div className="panel-head">
-            <h3>Latency samples</h3>
-            <span className="muted mono">pipeline ms</span>
-          </div>
-          <div className="chart-box">
-            {latencySpark.length ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={latencySpark}>
-                  <XAxis dataKey="i" hide />
-                  <YAxis tick={{ fill: CHART_MUTED, fontSize: 11 }} axisLine={false} tickLine={false} width={36} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Area type="stepAfter" dataKey="ms" stroke="#2b9af3" fill="rgba(43,154,243,0.15)" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="muted">Latency samples unavailable.</p>
-            )}
-          </div>
-        </div>
-
-        <div className="panel span-7">
-          <div className="panel-head">
-            <h3>Live feed · elevated</h3>
+            <h3>Elevated patterns</h3>
             <Link className="text-link" to="/live">
-              Open Live Monitor →
+              Open Live →
             </Link>
           </div>
           <div className="feed-list">
@@ -403,33 +290,10 @@ export default function Dashboard() {
                 </span>
               </div>
             ))}
-            {!events.length && <p className="muted">Waiting for scored CDC events…</p>}
+            {!events.length && (
+              <p className="muted">Live is empty — clear leaves it blank; Demo injects one scenario at a time.</p>
+            )}
           </div>
-        </div>
-
-        <div className="panel span-5">
-          <div className="panel-head">
-            <h3>Platform health</h3>
-            <span className="muted mono">
-              model {platform.model_loaded ? 'loaded' : 'missing'}
-            </span>
-          </div>
-          <ul className="health-grid">
-            {platformRows.map((row) => {
-              const node = platform[row.key] || {}
-              const ok = Boolean(node.ok)
-              return (
-                <li key={row.key} className={ok ? 'ok' : 'bad'}>
-                  <span className="health-dot" />
-                  <div>
-                    <strong>{row.label}</strong>
-                    <span className="muted">{row.hint}</span>
-                  </div>
-                  <span className="mono health-detail">{node.detail || (ok ? 'ok' : 'down')}</span>
-                </li>
-              )
-            })}
-          </ul>
         </div>
       </div>
     </div>

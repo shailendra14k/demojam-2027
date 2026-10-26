@@ -14,6 +14,8 @@ data:
   KAFKA_BOOTSTRAP_SERVERS: sentinel-kafka-kafka-bootstrap:9092
   DATABASE_URL: postgresql://casino:casino@casino-db:5432/casino
   PIPELINE_MODE: cdc
+  # Industry pack for Realtime TxnIQ (casino|banking|payments|insurance|telecom)
+  INDUSTRY_CATEGORY: casino
   # mock|cpu|nvidia — nvidia maps to TFM HTTP when TFM_EMBED_URL is set
   AI_MODE: mock
   TFM_MODE: hashed

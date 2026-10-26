@@ -31,15 +31,30 @@ export const api = {
   },
   patchAlert: (id: string, body: any) =>
     req<any>(`/api/v1/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  rulesCatalog: () => req<any>('/api/v1/rules/catalog'),
+  rulesCatalog: (category?: string) =>
+    req<any>(`/api/v1/rules/catalog${category ? `?category=${encodeURIComponent(category)}` : ''}`),
   weights: () => req<any>('/api/v1/settings/weights'),
+  patchWeights: (body: {
+    rules_pct?: number
+    ml_pct?: number
+    behavioral_pct?: number
+    kyc_pct?: number
+    alert_threshold_pct?: number
+  }) =>
+    req<any>('/api/v1/settings/weights', { method: 'PATCH', body: JSON.stringify(body) }),
+  industrySettings: () => req<any>('/api/v1/settings/industry'),
+  patchIndustry: (category: string) =>
+    req<any>('/api/v1/settings/industry', {
+      method: 'PATCH',
+      body: JSON.stringify({ category }),
+    }),
   simulatorSettings: () => req<any>('/api/v1/settings/simulator'),
   patchSimulatorSettings: (body: { interval_sec?: number; enabled?: boolean }) =>
     req<any>('/api/v1/settings/simulator', { method: 'PATCH', body: JSON.stringify(body) }),
-  clearLive: (body?: { seed?: boolean; scenarios?: string[] }) =>
+  clearLive: (body?: { seed?: boolean; scenarios?: string[]; pause_simulator?: boolean }) =>
     req<any>('/api/v1/live/clear', {
       method: 'POST',
-      body: JSON.stringify(body ?? { seed: true }),
+      body: JSON.stringify(body ?? { seed: false, pause_simulator: true }),
     }),
   caseDetail: (caseId: string) =>
     req<any>(`/api/v1/cases/${encodeURIComponent(caseId)}`),

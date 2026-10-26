@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Casino Sentinel FastAPI — health, AML APIs, demo controls, SSE.
+"""Realtime TxnIQ FastAPI — health, pattern APIs, demo controls, SSE.
 
 Pipeline modes
 --------------
@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT / "ai" / "adapter"))
 sys.path.insert(0, str(REPO_ROOT / "sql" / "scenarios"))
 
 from casino_common.config import database_url  # noqa: E402
+from casino_common.industry_packs import enrich_rules, get_pack, list_industries  # noqa: E402
 from casino_common.logging_config import set_context, setup_logging  # noqa: E402
 from casino_common.models import AlertStatus, MLPrediction, RiskLevel  # noqa: E402
 from explain import explain  # noqa: E402
@@ -60,7 +61,11 @@ PIPELINE_MODE = os.getenv("PIPELINE_MODE", "local").lower().strip()
 # Clients (demo.sh / UI) continue polling /api/v1/alerts after this window.
 CDC_WAIT_SECONDS = int(os.getenv("CDC_WAIT_SECONDS", "45"))
 
-app = FastAPI(title="Casino Sentinel API", version="1.0.0", description="From Transaction to Suspicion, in Seconds")
+app = FastAPI(
+    title="Realtime TxnIQ API",
+    version="1.0.0",
+    description="Real-time transaction pattern intelligence — industry packs, not one-off events",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -108,6 +113,101 @@ SSE_SUBSCRIBERS: list[asyncio.Queue] = []
 START_TIME = time.time()
 _ALERT_IDS: set[str] = set()
 _EVENT_IDS: set[str] = set()
+# Live Monitor focus for demos: "all" | "empty" | "focus"
+LIVE_VIEW_MODE: str = "all"
+LIVE_FOCUS_PLAYER_IDS: set[str] = set()
+LIVE_CLEARED_AT: float = 0.0
+
+
+def _set_live_view(*, mode: str, player_ids: list[str] | None = None) -> None:
+    global LIVE_VIEW_MODE, LIVE_FOCUS_PLAYER_IDS
+    LIVE_VIEW_MODE = mode if mode in {"all", "empty", "focus"} else "all"
+    LIVE_FOCUS_PLAYER_IDS = {str(p) for p in (player_ids or []) if p}
+    if LIVE_VIEW_MODE == "focus" and not LIVE_FOCUS_PLAYER_IDS:
+        LIVE_VIEW_MODE = "empty"
+
+
+def _live_accepts_player(player_id: str | None) -> bool:
+    if LIVE_VIEW_MODE == "all":
+        return True
+    if LIVE_VIEW_MODE == "empty":
+        return False
+    pid = str(player_id or "")
+    return bool(pid) and pid in LIVE_FOCUS_PLAYER_IDS
+
+
+def _filter_live_alerts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if LIVE_VIEW_MODE == "all":
+        return items
+    if LIVE_VIEW_MODE == "empty":
+        return []
+    return [a for a in items if str(a.get("player_id") or "") in LIVE_FOCUS_PLAYER_IDS]
+
+
+def _filter_live_events(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if LIVE_VIEW_MODE == "all":
+        return items
+    if LIVE_VIEW_MODE == "empty":
+        return []
+    out: list[dict[str, Any]] = []
+    for item in items:
+        ev = item.get("event") or {}
+        pid = str(ev.get("player_id") or item.get("player_id") or "")
+        if pid in LIVE_FOCUS_PLAYER_IDS:
+            out.append(item)
+    return out
+
+
+def _wipe_live_buffers() -> tuple[int, int]:
+    cleared_events = len(EVENTS)
+    cleared_alerts = len(ALERTS)
+    EVENTS.clear()
+    _EVENT_IDS.clear()
+    ALERTS.clear()
+    _ALERT_IDS.clear()
+    PLAYERS.clear()
+    ALERTS_GAUGE.set(0)
+    return cleared_events, cleared_alerts
+
+
+def _wipe_live_db() -> dict[str, int]:
+    db_deleted = {"alerts": 0, "transactions": 0, "wagers": 0, "cage": 0, "chips": 0, "aml_events": 0}
+    try:
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(database_url(), pool_pre_ping=True)
+        with engine.begin() as conn:
+            for table, key in (
+                ("aml.alerts", "alerts"),
+                ("aml.events", "aml_events"),
+                ("transactions", "transactions"),
+                ("wagers", "wagers"),
+                ("cage_transactions", "cage"),
+                ("chip_transactions", "chips"),
+            ):
+                try:
+                    r = conn.execute(text(f"DELETE FROM {table}"))
+                    db_deleted[key] = r.rowcount or 0
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("clear %s failed: %s", table, exc)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("live clear DB wipe failed: %s", exc)
+    return db_deleted
+
+
+def _pause_background_simulator() -> str | None:
+    """Stop dummy traffic so Clear/Demo stay empty except intentional injects."""
+    try:
+        _patch_configmap_data({"SIMULATOR_ENABLED": "false"})
+        os.environ["SIMULATOR_ENABLED"] = "false"
+        _restart_simulator_deploy()
+        return "paused"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not pause simulator: %s", exc)
+        os.environ["SIMULATOR_ENABLED"] = "false"
+        return f"env-only ({exc})"
+
+
 
 
 class InjectRequest(BaseModel):
@@ -218,6 +318,8 @@ def _row_to_alert(row: Any) -> dict[str, Any]:
 def _push_live_event(item: dict[str, Any], *, broadcast: bool = True) -> bool:
     """Append a Live-Monitor row; dedupe by event_id / transaction_id."""
     event = item.get("event") or {}
+    if not _live_accepts_player(str(event.get("player_id") or item.get("player_id") or "")):
+        return False
     eid = str(event.get("event_id") or event.get("transaction_id") or "")
     if eid and eid in _EVENT_IDS:
         return False
@@ -638,6 +740,8 @@ def _ingest_alert(alert: dict[str, Any]) -> None:
     aid = str(alert.get("alert_id") or "")
     if not aid or aid in _ALERT_IDS:
         return
+    if not _live_accepts_player(str(alert.get("player_id") or "")):
+        return
     _ALERT_IDS.add(aid)
     alert = _enrich_alert_tx_fields(dict(alert))
     ALERTS.insert(0, alert)
@@ -670,6 +774,11 @@ def _ingest_alert(alert: dict[str, Any]) -> None:
 
 def _ingest_risk_assessment(assessment: dict[str, Any]) -> None:
     if not isinstance(assessment, dict) or not assessment.get("event_id"):
+        return
+    if not _live_accepts_player(str(assessment.get("player_id") or "")):
+        return
+    tid = str(assessment.get("transaction_id") or "")
+    if tid and LIVE_VIEW_MODE in {"empty", "focus"} and not _lookup_transaction(tid):
         return
     eid = str(assessment.get("event_id") or "")
     if eid and eid in _EVENT_IDS:
@@ -1920,20 +2029,23 @@ def metrics_summary():
 @app.get("/api/v1/alerts")
 def list_alerts(status: Optional[str] = None, limit: int = Query(50, ge=1, le=500)):
     REQUESTS.labels(endpoint="alerts").inc()
-    # Only hydrate from DB when memory is empty (Kafka consumer keeps it warm).
+    if LIVE_VIEW_MODE == "empty":
+        return {"items": [], "total": 0, "live_view_mode": LIVE_VIEW_MODE}
     if PIPELINE_MODE == "cdc" and len(ALERTS) == 0:
-        hydrate_alerts_from_db()
-    items = ALERTS
+        if LIVE_VIEW_MODE == "focus":
+            hydrate_alerts_from_db(player_ids=list(LIVE_FOCUS_PLAYER_IDS) or None)
+        else:
+            hydrate_alerts_from_db()
+    items = _filter_live_alerts(ALERTS)
     if status:
         items = [a for a in items if a["status"] == status]
-    # Enrich Type/Amount only when missing — avoid N DB lookups on every poll.
     out: list[dict[str, Any]] = []
     for a in items[:limit]:
         if a.get("amount") is not None and a.get("transaction_type"):
             out.append(a)
         else:
             out.append(_enrich_alert_tx_fields(dict(a)))
-    return {"items": out, "total": len(items)}
+    return {"items": out, "total": len(items), "live_view_mode": LIVE_VIEW_MODE}
 
 
 @app.get("/api/v1/alerts/{alert_id}")
@@ -2287,75 +2399,53 @@ def get_case_detail(case_id: str):
 
 
 class ClearLiveIn(BaseModel):
-    seed: bool = True
-    scenarios: list[str] = Field(
-        default_factory=lambda: ["structuring", "rapid_wire", "shared_device"]
-    )
+    seed: bool = False
+    scenarios: list[str] = Field(default_factory=list)
+    pause_simulator: bool = True
 
 
-@app.post("/api/v1/live/clear")
-def clear_live_transactions(body: ClearLiveIn | None = None):
-    """Wipe Live Monitor buffer (+ DB alerts) and optionally inject fresh full-field demo rows."""
-    REQUESTS.labels(endpoint="live_clear").inc()
-    body = body or ClearLiveIn()
-    cleared_events = len(EVENTS)
-    cleared_alerts = len(ALERTS)
-    EVENTS.clear()
-    _EVENT_IDS.clear()
-    ALERTS.clear()
-    _ALERT_IDS.clear()
-    PLAYERS.clear()
-    ALERTS_GAUGE.set(0)
+def _normalize_demo_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for e in events:
+        e["amount"] = float(e["amount"]) if e.get("amount") is not None else 100.0
+        e["transaction_type"] = e.get("transaction_type") or e.get("event_type") or "CASH_IN"
+        e["event_type"] = e.get("event_type") or e["transaction_type"]
+        e["currency"] = e.get("currency") or "USD"
+        e["location"] = e.get("location") or "Cage 01"
+        e["payment_method"] = e.get("payment_method") or e.get("channel") or "CASH"
+        e["channel"] = e.get("channel") or e["payment_method"]
+        e["player_id"] = e.get("player_id") or f"C{uuid4().hex[:5].upper()}"
+        e["transaction_id"] = e.get("transaction_id") or f"TXN-{uuid4().hex[:12].upper()}"
+    return events
 
-    db_deleted = {"alerts": 0, "transactions": 0, "wagers": 0, "cage": 0, "chips": 0}
-    try:
-        from sqlalchemy import create_engine, text
 
-        engine = create_engine(database_url(), pool_pre_ping=True)
-        with engine.begin() as conn:
-            try:
-                r = conn.execute(text("DELETE FROM aml.alerts"))
-                db_deleted["alerts"] = r.rowcount or 0
-            except Exception as exc:  # noqa: BLE001
-                log.warning("clear aml.alerts failed: %s", exc)
-            # Fresh demo surface: remove recent gaming activity (keep players/KYC).
-            for table, key in (
-                ("transactions", "transactions"),
-                ("wagers", "wagers"),
-                ("cage_transactions", "cage"),
-                ("chip_transactions", "chips"),
-            ):
-                try:
-                    r = conn.execute(text(f"DELETE FROM {table}"))
-                    db_deleted[key] = r.rowcount or 0
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("clear %s failed: %s", table, exc)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("live clear DB wipe failed: %s", exc)
+def _prepare_live_surface(
+    *,
+    seed: bool = False,
+    scenarios: list[str] | None = None,
+    pause_simulator: bool = True,
+    focus_player_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Wipe Live + DB; optionally seed; set view mode empty or focus."""
+    global LIVE_CLEARED_AT
+    cleared_events, cleared_alerts = _wipe_live_buffers()
+    db_deleted = _wipe_live_db()
+    LIVE_CLEARED_AT = time.time()
+    _set_live_view(mode="empty")
+    sim_note = _pause_background_simulator() if pause_simulator else None
 
     seeded: list[dict[str, Any]] = []
-    if body.seed:
-        for raw_name in body.scenarios or []:
+    focus_ids: list[str] = list(focus_player_ids or [])
+    if seed:
+        for raw_name in scenarios or []:
             name = str(raw_name).strip().lower().replace("-", "_")
             if name not in EXPECTED:
                 seeded.append({"scenario": name, "error": f"unknown scenario; choose from {list(EXPECTED)}"})
                 continue
             try:
                 resolved_seed = int(time.time()) + len(seeded)
-                events = build_events(name, resolved_seed)
-                # Guarantee non-null display fields on every injected row
-                for e in events:
-                    e["amount"] = float(e["amount"]) if e.get("amount") is not None else 100.0
-                    e["transaction_type"] = (
-                        e.get("transaction_type") or e.get("event_type") or "CASH_IN"
-                    )
-                    e["event_type"] = e.get("event_type") or e["transaction_type"]
-                    e["currency"] = e.get("currency") or "USD"
-                    e["location"] = e.get("location") or "Cage 01"
-                    e["payment_method"] = e.get("payment_method") or e.get("channel") or "CASH"
-                    e["channel"] = e.get("channel") or e["payment_method"]
-                    e["player_id"] = e.get("player_id") or f"C{uuid4().hex[:5].upper()}"
-                    e["transaction_id"] = e.get("transaction_id") or f"TXN-{uuid4().hex[:12].upper()}"
+                events = _normalize_demo_events(build_events(name, resolved_seed))
+                focus_ids.extend(str(e["player_id"]) for e in events if e.get("player_id"))
+                _set_live_view(mode="focus", player_ids=focus_ids)
                 if PIPELINE_MODE == "cdc":
                     written = write_events_to_postgres(events)
                     seeded.append({"scenario": name, "written": len(written), "seed": resolved_seed})
@@ -2367,15 +2457,40 @@ def clear_live_transactions(body: ClearLiveIn | None = None):
                 log.warning("seed scenario %s failed: %s", name, exc)
                 seeded.append({"scenario": name, "error": str(exc)})
 
-    _broadcast({"type": "event", "data": {"cleared": True}})
+    if focus_ids:
+        _set_live_view(mode="focus", player_ids=focus_ids)
+    else:
+        _set_live_view(mode="empty")
+
+    _broadcast({"type": "event", "data": {"cleared": True, "live_view_mode": LIVE_VIEW_MODE}})
     return {
         "ok": True,
         "cleared_live_events": cleared_events,
         "cleared_memory_alerts": cleared_alerts,
         "db_deleted": db_deleted,
         "seeded": seeded,
-        "note": "Live buffer cleared. Fresh CDC rows will appear as the pipeline scores them.",
+        "live_view_mode": LIVE_VIEW_MODE,
+        "focus_player_ids": sorted(LIVE_FOCUS_PLAYER_IDS),
+        "simulator": sim_note,
+        "note": (
+            "Live is empty. Background simulator paused — re-enable in Settings if needed."
+            if LIVE_VIEW_MODE == "empty"
+            else "Live focused on demo players only."
+        ),
     }
+
+
+@app.post("/api/v1/live/clear")
+def clear_live_transactions(body: ClearLiveIn | None = None):
+    """Wipe Live Monitor so the page is empty (no auto-seed). Demo buttons refill one scenario."""
+    REQUESTS.labels(endpoint="live_clear").inc()
+    body = body or ClearLiveIn()
+    return _prepare_live_surface(
+        seed=bool(body.seed),
+        scenarios=list(body.scenarios or []),
+        pause_simulator=bool(body.pause_simulator),
+    )
+
 
 
 def _serialize_value(value: Any) -> Any:
@@ -2863,10 +2978,13 @@ def _enrich_live_item_inplace(item: dict[str, Any]) -> dict[str, Any]:
 @app.get("/api/v1/events/live")
 def live_events(limit: int = Query(50, ge=1, le=500)):
     REQUESTS.labels(endpoint="events_live").inc()
-    if PIPELINE_MODE == "cdc" and len(EVENTS) == 0:
+    if LIVE_VIEW_MODE == "empty":
+        return {"items": [], "live_view_mode": LIVE_VIEW_MODE}
+    if PIPELINE_MODE == "cdc" and len(EVENTS) == 0 and LIVE_VIEW_MODE == "all":
         hydrate_live_events_from_db(limit=max(limit, 100))
-    items = [_enrich_live_item_inplace(dict(x)) for x in list(EVENTS)[:limit]]
-    return {"items": items}
+    filtered = _filter_live_events(list(EVENTS))
+    items = [_enrich_live_item_inplace(dict(x)) for x in filtered[:limit]]
+    return {"items": items, "live_view_mode": LIVE_VIEW_MODE}
 
 
 @app.post("/api/v1/demo/inject")
@@ -2892,22 +3010,35 @@ def run_demo_scenario(
         le=120,
         description="CDC poll budget; default CDC_WAIT_SECONDS (keep ≤45 on public Routes). Use 0 for fire-and-poll from UI.",
     ),
+    replace_live: bool = Query(
+        True,
+        description="Clear Live first so only this scenario's transactions appear",
+    ),
 ):
     REQUESTS.labels(endpoint="scenario").inc()
     if name not in EXPECTED:
         raise HTTPException(400, f"unknown scenario; choose from {list(EXPECTED)}")
-    # Fresh seed by default — fixed 42 is idempotent after the first successful inject.
     resolved_seed = int(seed) if seed is not None else int(time.time())
-    events = build_events(name, resolved_seed)
+    events = _normalize_demo_events(build_events(name, resolved_seed))
+    player_ids = list({str(e.get("player_id")) for e in events if e.get("player_id")})
+    cleared: dict[str, Any] | None = None
+    if replace_live:
+        cleared = _prepare_live_surface(seed=False, pause_simulator=True, focus_player_ids=player_ids)
+        _set_live_view(mode="focus", player_ids=player_ids)
+    else:
+        _set_live_view(mode="focus", player_ids=player_ids)
     if PIPELINE_MODE == "cdc":
         out = run_cdc_demo(events, wait_seconds=wait_seconds)
         return {
             "scenario": name,
             "seed": resolved_seed,
-            "player_ids": list({str(e.get("player_id")) for e in events if e.get("player_id")}),
+            "player_ids": player_ids,
             "expected": EXPECTED[name],
             "events_injected": len(events),
             "pipeline_mode": "cdc",
+            "live_view_mode": LIVE_VIEW_MODE,
+            "replaced_live": bool(replace_live),
+            "cleared": cleared,
             "sample_risk": (
                 {
                     "risk_level": (out["alerts"][0].get("risk_level") if out.get("alerts") else None),
@@ -2923,14 +3054,18 @@ def run_demo_scenario(
     return {
         "scenario": name,
         "seed": resolved_seed,
-        "player_ids": list({str(e.get("player_id")) for e in events if e.get("player_id")}),
+        "player_ids": player_ids,
         "expected": EXPECTED[name],
         "events_injected": len(events),
         "alerts_generated": len(alerts),
         "alerts": alerts,
         "sample_risk": results[-1]["risk"] if results else None,
         "pipeline_mode": "local",
+        "live_view_mode": LIVE_VIEW_MODE,
+        "replaced_live": bool(replace_live),
+        "cleared": cleared,
     }
+
 
 
 @app.get("/api/v1/demo/scenarios")
@@ -2938,10 +3073,80 @@ def list_scenarios():
     return EXPECTED
 
 
+def _current_industry() -> str:
+    try:
+        data = _read_configmap_data()
+        raw = data.get("INDUSTRY_CATEGORY") or os.getenv("INDUSTRY_CATEGORY", "casino")
+    except Exception:  # noqa: BLE001
+        raw = os.getenv("INDUSTRY_CATEGORY", "casino")
+    return get_pack(raw)["id"]
+
+
 @app.get("/api/v1/rules/catalog")
-def rules_catalog():
-    """Static catalog of AML-001..015 (no mock padding)."""
-    return {"items": RULE_CATALOG}
+def rules_catalog(category: Optional[str] = Query(None)):
+    """Pre-populated pattern rules for the selected industry category."""
+    cat = category or _current_industry()
+    pack = get_pack(cat)
+    return {
+        "category": pack["id"],
+        "category_label": pack["label"],
+        "tagline": pack["tagline"],
+        "pattern_focus": pack["pattern_focus"],
+        "note": "Realtime TxnIQ identifies patterns over streams — not a single in-time event.",
+        "items": enrich_rules(cat),
+    }
+
+
+@app.get("/api/v1/settings/industry")
+def get_industry_settings():
+    """Admin-selected industry pack (casino is one of several categories)."""
+    REQUESTS.labels(endpoint="settings_industry").inc()
+    cat = _current_industry()
+    pack = get_pack(cat)
+    return {
+        "category": pack["id"],
+        "label": pack["label"],
+        "tagline": pack["tagline"],
+        "entity_label": pack["entity_label"],
+        "stream_label": pack["stream_label"],
+        "pattern_focus": pack["pattern_focus"],
+        "industries": list_industries(),
+        "note": "Category loads pre-populated pattern rules. Casino is the live demo pack.",
+    }
+
+
+class IndustrySettingsIn(BaseModel):
+    category: str = Field(..., min_length=2, max_length=32)
+
+
+@app.patch("/api/v1/settings/industry")
+def patch_industry_settings(body: IndustrySettingsIn):
+    REQUESTS.labels(endpoint="settings_industry_patch").inc()
+    known = {p["id"] for p in list_industries()}
+    key = body.category.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {"gaming": "casino", "bank": "banking", "payment": "payments", "telco": "telecom"}
+    key = aliases.get(key, key)
+    if key not in known:
+        raise HTTPException(400, f"Unknown category; choose from {sorted(known)}")
+    pack = get_pack(key)
+    try:
+        _patch_configmap_data({"INDUSTRY_CATEGORY": pack["id"]})
+        source = "casino-config"
+        note = "Industry pack updated. Rules catalog and UI labels follow this category."
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        os.environ["INDUSTRY_CATEGORY"] = pack["id"]
+        source = "env"
+        note = f"ConfigMap update unavailable ({exc}); set for this API process only"
+    return {
+        "category": pack["id"],
+        "label": pack["label"],
+        "tagline": pack["tagline"],
+        "source": source,
+        "note": note,
+        "industries": list_industries(),
+    }
 
 
 def _find_alert(investigation_id: str) -> dict[str, Any] | None:
@@ -3388,18 +3593,107 @@ def get_investigation_network(investigation_id: str):
     return _build_investigation_network(alert)
 
 
+def _read_weight_env() -> dict[str, float]:
+    """Read scoring weights + threshold from ConfigMap/env.
+
+    Weights are stored as 0..1 fractions matching the admin % (e.g. 45% → 0.45).
+    Risk-engine normalizes at score time if they do not sum to 1.
+    """
+    try:
+        data = _read_configmap_data()
+    except Exception:  # noqa: BLE001
+        data = {}
+    def _f(key: str, default: str) -> float:
+        raw = data.get(key) or os.getenv(key, default)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return float(default)
+
+    rules = _f("RISK_WEIGHT_RULES", "0.45")
+    ml = _f("RISK_WEIGHT_ML", "0.35")
+    behavioral = _f("RISK_WEIGHT_BEHAVIORAL", "0.20")
+    kyc = _f("RISK_WEIGHT_KYC", "0.10")
+    return {
+        "rules": round(rules, 4),
+        "ml": round(ml, 4),
+        "behavioral": round(behavioral, 4),
+        "kyc": round(kyc, 4),
+        "alert_threshold": _f("ALERT_THRESHOLD", "0.55"),
+    }
+
+
 @app.get("/api/v1/settings/weights")
 def score_weights():
-    from risk_aggregator import _weights
-
-    w = _weights()
+    w = _read_weight_env()
     return {
-        "rules": w["rules"],
-        "ml": w["ml"],
-        "behavioral": w["behavioral"],
-        "kyc": w.get("kyc", 0.0),
-        "alert_threshold": float(os.getenv("ALERT_THRESHOLD", "0.55")),
-        "note": "Normalized weights from ConfigMap / env (sum=1)",
+        **w,
+        "rules_pct": round(w["rules"] * 100),
+        "ml_pct": round(w["ml"] * 100),
+        "behavioral_pct": round(w["behavioral"] * 100),
+        "kyc_pct": round(w["kyc"] * 100),
+        "alert_threshold_pct": round(w["alert_threshold"] * 100),
+        "note": "Score mix is configurable (%). Risk engine scales weights if they do not sum to 100. Threshold is the alert cut-off.",
+    }
+
+
+class WeightsSettingsIn(BaseModel):
+    rules_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    ml_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    behavioral_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    kyc_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    alert_threshold_pct: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+@app.patch("/api/v1/settings/weights")
+def patch_score_weights(body: WeightsSettingsIn):
+    """Admin-configurable score percentages + alert threshold."""
+    REQUESTS.labels(endpoint="settings_weights_patch").inc()
+    current = _read_weight_env()
+    rules = body.rules_pct if body.rules_pct is not None else current["rules"] * 100
+    ml = body.ml_pct if body.ml_pct is not None else current["ml"] * 100
+    behavioral = body.behavioral_pct if body.behavioral_pct is not None else current["behavioral"] * 100
+    kyc = body.kyc_pct if body.kyc_pct is not None else current["kyc"] * 100
+    threshold_pct = (
+        body.alert_threshold_pct
+        if body.alert_threshold_pct is not None
+        else current["alert_threshold"] * 100
+    )
+    if rules + ml + behavioral + kyc <= 0:
+        raise HTTPException(400, "At least one weight must be greater than 0")
+    # Store as the admin % / 100 (risk-engine normalizes when scoring)
+    updates = {
+        "RISK_WEIGHT_RULES": f"{max(0.0, rules) / 100.0:.4f}",
+        "RISK_WEIGHT_ML": f"{max(0.0, ml) / 100.0:.4f}",
+        "RISK_WEIGHT_BEHAVIORAL": f"{max(0.0, behavioral) / 100.0:.4f}",
+        "RISK_WEIGHT_KYC": f"{max(0.0, kyc) / 100.0:.4f}",
+        "ALERT_THRESHOLD": f"{max(0.0, min(1.0, threshold_pct / 100.0)):.4f}",
+    }
+    try:
+        _patch_configmap_data(updates)
+        # Also update this API process so UI reads back immediately
+        for k, v in updates.items():
+            os.environ[k] = v
+        source = "casino-config"
+        note = "Weights saved. Risk services pick up ConfigMap on next restart/reload."
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        for k, v in updates.items():
+            os.environ[k] = v
+        source = "env"
+        note = f"ConfigMap update unavailable ({exc}); applied to this API process only"
+    w = _read_weight_env()
+    return {
+        **w,
+        "rules_pct": round(w["rules"] * 100),
+        "ml_pct": round(w["ml"] * 100),
+        "behavioral_pct": round(w["behavioral"] * 100),
+        "kyc_pct": round(w["kyc"] * 100),
+        "alert_threshold_pct": round(w["alert_threshold"] * 100),
+        "source": source,
+        "updated": list(updates.keys()),
+        "note": note,
     }
 
 
@@ -3526,6 +3820,8 @@ def patch_simulator_settings(body: SimulatorSettingsIn):
         updates["SIMULATOR_INTERVAL_SEC"] = str(int(body.interval_sec) if body.interval_sec == int(body.interval_sec) else body.interval_sec)
     if body.enabled is not None:
         updates["SIMULATOR_ENABLED"] = "true" if body.enabled else "false"
+        if body.enabled:
+            _set_live_view(mode="all")
     try:
         data = _patch_configmap_data(updates)
         _restart_simulator_deploy()
@@ -3586,7 +3882,7 @@ async def ws_endpoint(ws: WebSocket):
 
 @app.on_event("startup")
 def on_startup():
-    log.info("Casino Sentinel API starting ai_mode=%s pipeline_mode=%s", os.getenv("AI_MODE", "mock"), PIPELINE_MODE)
+    log.info("Realtime TxnIQ API starting ai_mode=%s pipeline_mode=%s", os.getenv("AI_MODE", "mock"), PIPELINE_MODE)
     if PIPELINE_MODE == "cdc":
         # Live rows first so alert hydrate can skip duplicate event pushes.
         n_live = hydrate_live_events_from_db()

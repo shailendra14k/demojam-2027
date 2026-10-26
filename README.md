@@ -1,6 +1,6 @@
-# Casino Sentinel
+# Realtime TxnIQ
 
-Microservice AML demo on OpenShift: PostgreSQL → Debezium → AMQ Streams → streaming services → investigator UI.
+Real-time transaction pattern intelligence on OpenShift: PostgreSQL → Debezium → AMQ Streams → streaming services → investigator UI. Industry packs (casino, banking, payments, insurance, telecom) — casino is the live demo pack.
 
 ---
 

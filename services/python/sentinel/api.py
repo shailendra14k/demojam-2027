@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("sentinel.api")
 
-app = FastAPI(title="Casino Sentinel AML API", version="1.0.0")
+app = FastAPI(title="Realtime TxnIQ API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

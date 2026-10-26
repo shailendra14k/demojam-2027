@@ -13,10 +13,10 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden>RH</div>
+          <div className="brand-mark" aria-hidden>TX</div>
           <div className="brand-copy">
-            <h1>Casino Sentinel</h1>
-            <span>Red Hat · OpenShift · AMQ Streams · Debezium · AML</span>
+            <h1>Realtime TxnIQ</h1>
+            <span>Real-time transaction pattern intelligence · Red Hat OpenShift</span>
           </div>
         </div>
         <nav className="nav">

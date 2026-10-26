@@ -175,6 +175,14 @@ export default function LiveMonitor() {
     es.onmessage = (msg) => {
       try {
         const payload = JSON.parse(msg.data)
+        if (payload?.data?.cleared) {
+          setAlerts([])
+          setEvents([])
+          setCaseDetail(null)
+          setSelected(null)
+          setLive('live')
+          return
+        }
         if (payload.type === 'event' || payload.type === 'alert') {
           tick()
         }
@@ -363,9 +371,12 @@ export default function LiveMonitor() {
     <div className="live-monitor-page">
       <section className="hero">
         <h2>
-          Live monitor <span className="badge LOW">{live}</span>
+          Live patterns <span className="badge LOW">{live}</span>
         </h2>
-        <p>Click an alert row to open Case Detail (status moves to Investigating).</p>
+        <p>
+          Realtime TxnIQ flags <strong>patterns</strong> as transactions stream in — click a row for
+          a plain-language case.
+        </p>
       </section>
 
       <div className="grid">
