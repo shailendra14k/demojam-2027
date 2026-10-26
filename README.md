@@ -119,7 +119,7 @@ Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](http
 | ---------------------------------------------------------------- | ----------------------------------------------- | ---------------------------------- |
 | repo root (`services/python/Containerfile` + `model/artifacts/`) | `quay.io/shailendra14k/sentinel-python:latest`  | all python services + API          |
 | `ui/` (`ui/Containerfile`)                                       | `quay.io/shailendra14k/sentinel-ui:latest`      | `sentinel-ui`                      |
-| `model/decoder-foundation-model/` (gitignored)                   | `quay.io/shailendra14k/casino-tfm-embed:latest` | InferenceService `tfm-embed` (GPU) |
+| `model/casino-tfm-embed/` + weights in `decoder-foundation-model/` (gitignored) | `quay.io/shailendra14k/casino-tfm-embed:latest` | InferenceService `tfm-embed` (GPU) |
 
 
 
@@ -180,6 +180,8 @@ Notes:
 Only when you change application or UI code.  
 Prerequisites: `podman` or `docker`, Quay write access, `model/artifacts/*.joblib` present.
 
+For `--tfm` / `casino-tfm-embed`: first download upstream weights into `model/decoder-foundation-model/` via `../nvidia-tfm/clone-nvidia-tfm.sh` (source: [NVIDIA transaction-foundation-model](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model) → `models/decoder-foundation-model/`, needs `git-lfs`).
+
 ```bash
 cd demojam-2027
 
@@ -190,6 +192,7 @@ podman login quay.io          # or: docker login quay.io
 
 chmod +x scripts/build-push-images.sh
 ./scripts/build-push-images.sh          # → sentinel-python:latest + sentinel-ui:latest
+# Before --tfm: ../nvidia-tfm/clone-nvidia-tfm.sh   # fills model/decoder-foundation-model/
 ./scripts/build-push-images.sh --tfm    # also casino-tfm-embed:latest
 ```
 

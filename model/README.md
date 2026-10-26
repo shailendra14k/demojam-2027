@@ -16,11 +16,11 @@ python train_models.py --csv artifacts/aml_train_synthetic.csv
 
 Then rebuild ``sentinel-python`` so ``aml_xgb.joblib`` is baked into the image.
 
-TFM embedding image (GPU / ``--rhoai``): sources live under
-``decoder-foundation-model/`` (gitignored — Containerfile, serve_embeddings.py, weights).
-Default deploy image is ``quay.io/shailendra14k/casino-tfm-embed:latest``.
-Rebuild (opt-in; not part of default ``build-push-images.sh``):
-``../scripts/build-push-images.sh --tfm`` → ``:latest``.
+TFM embedding image (GPU / ``--rhoai``):
+``model/casino-tfm-embed/`` (tracked Containerfile + ``serve_embeddings.py``) +
+``model/decoder-foundation-model/`` (gitignored upstream weights).
+Default deploy image: ``quay.io/shailendra14k/casino-tfm-embed:latest``.
+Rebuild (opt-in): ``../scripts/build-push-images.sh --tfm`` → ``:latest``.
 
 | File | Role |
 |---|---|
@@ -28,4 +28,5 @@ Rebuild (opt-in; not part of default ``build-push-images.sh``):
 | `requirements.txt` | Train deps |
 | `artifacts/aml_xgb.joblib` | Classifier payload `{model, feature_names, kind}` |
 | `artifacts/meta.json` | Metrics + feature list |
-| `decoder-foundation-model/` | Local TFM bake context (gitignored) |
+| `casino-tfm-embed/` | Tracked bake sources (Containerfile + embed server) |
+| `decoder-foundation-model/` | Upstream TFM weights only (gitignored) |

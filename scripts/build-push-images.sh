@@ -14,8 +14,9 @@
 #   TAG=v1.2 ./scripts/build-push-images.sh
 #   REGISTRY=quay.io/myorg ./scripts/build-push-images.sh
 #
-# TFM sources: model/decoder-foundation-model/{Containerfile,serve_embeddings.py,weights}
-# (gitignored).
+# TFM sources:
+#   model/casino-tfm-embed/{Containerfile,serve_embeddings.py}  (tracked)
+#   model/decoder-foundation-model/                           (gitignored weights)
 #
 # Then deploy:
 #   ./deploy.sh --token=TOKEN --server=URL
@@ -82,14 +83,16 @@ build_push() {
   build_push "${ROOT}/ui" "${ROOT}/ui/Containerfile" "${UI_IMAGE}"
 
 if [[ "${BUILD_TFM}" == true ]]; then
-  TFM_DIR="${ROOT}/model/decoder-foundation-model"
-  CKPT="${TFM_DIR}/model-00001-of-00001.safetensors"
-  [[ -f "${TFM_DIR}/Containerfile" ]] || die "Missing ${TFM_DIR}/Containerfile"
-  [[ -f "${TFM_DIR}/serve_embeddings.py" ]] || die "Missing ${TFM_DIR}/serve_embeddings.py"
-  [[ -f "${CKPT}" ]] || die "Missing ${CKPT} (needed to bake casino-tfm-embed)"
+  TFM_SRC="${ROOT}/model/casino-tfm-embed"
+  CKPT_DIR="${ROOT}/model/decoder-foundation-model"
+  CKPT="${CKPT_DIR}/model-00001-of-00001.safetensors"
+  [[ -f "${TFM_SRC}/Containerfile" ]] || die "Missing ${TFM_SRC}/Containerfile"
+  [[ -f "${TFM_SRC}/serve_embeddings.py" ]] || die "Missing ${TFM_SRC}/serve_embeddings.py"
+  [[ -f "${CKPT}" ]] || die "Missing ${CKPT} (clone weights via ../nvidia-tfm/clone-nvidia-tfm.sh)"
   sz="$(wc -c < "${CKPT}" | tr -d ' ')"
   [[ "${sz}" -gt 1000000 ]] || die "${CKPT} looks truncated (${sz} bytes)"
-  build_push "${TFM_DIR}" "${TFM_DIR}/Containerfile" "${TFM_IMAGE}"
+  # Context = model/ so Containerfile can COPY casino-tfm-embed/ + decoder-foundation-model/
+  build_push "${ROOT}/model" "${TFM_SRC}/Containerfile" "${TFM_IMAGE}"
 fi
 
 echo

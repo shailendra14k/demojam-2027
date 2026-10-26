@@ -1,0 +1,37 @@
+# Casino Sentinel TFM embedding server (tracked).
+# Base: quay.io/shailendra14k/nemo:25.09.01 (no NGC key).
+# Build context: model/ (parent) so we can COPY upstream weights from
+# decoder-foundation-model/ (gitignored) without committing them here.
+#
+# BEFORE build — download decoder-foundation-model weights (~56MB, Git LFS):
+#   Upstream: https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model
+#             → models/decoder-foundation-model/
+#   From demoJam workspace root:
+#     ../nvidia-tfm/clone-nvidia-tfm.sh
+#   That copies into: demojam-2027/model/decoder-foundation-model/
+#   (requires git-lfs: brew install git-lfs)
+#
+#   TAG=latest ./scripts/build-push-images.sh --tfm-only
+#
+# Image layout (unchanged for ServingRuntime):
+#   /opt/tfm/decoder-foundation-model/{serve_embeddings.py,*.safetensors,...}
+
+FROM quay.io/shailendra14k/nemo:25.09.01
+
+COPY casino-tfm-embed/serve_embeddings.py \
+     /opt/tfm/decoder-foundation-model/serve_embeddings.py
+
+COPY decoder-foundation-model/config.json \
+     decoder-foundation-model/generation_config.json \
+     decoder-foundation-model/model.safetensors.index.json \
+     decoder-foundation-model/model-00001-of-00001.safetensors \
+     /opt/tfm/decoder-foundation-model/
+
+ENV PORT=8080 \
+    TFM_CHECKPOINT=/opt/tfm/decoder-foundation-model \
+    TFM_PAD_ID=0
+
+WORKDIR /opt/tfm/decoder-foundation-model
+EXPOSE 8080
+
+CMD ["python", "/opt/tfm/decoder-foundation-model/serve_embeddings.py"]

@@ -235,7 +235,8 @@ deploy_console() {
 }
 
 # OpenShift AI TFM: casino-tfm-embed image (NeMo + script + weights) ServingRuntime + InferenceService.
-# Laptop pre-req: model/decoder-foundation-model/ on disk (gitignored; clone-nvidia-tfm.sh only if missing).
+# Laptop pre-req for rebuild: model/decoder-foundation-model/ weights (gitignored; clone-nvidia-tfm.sh).
+# Bake sources: model/casino-tfm-embed/{Containerfile,serve_embeddings.py} (tracked).
 
 # Fresh 1-GPU labs often ship with llama-32-3b-instruct (or similar) already on the GPU.
 # Stop other GPU InferenceServices / Deployments before scheduling tfm-embed.

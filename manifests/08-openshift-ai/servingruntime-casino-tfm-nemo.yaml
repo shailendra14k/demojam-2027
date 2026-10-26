@@ -2,7 +2,7 @@
 #   - OpenShift AI single-model serving (KServe) enabled
 #   - Default image quay.io/shailendra14k/casino-tfm-embed:latest
 #     Rebuild opt-in: TAG=latest ./scripts/build-push-images.sh --tfm
-#     (sources: model/decoder-foundation-model/ — gitignored)
+#     (sources: model/casino-tfm-embed/ + gitignored decoder-foundation-model/ weights)
 # deploy.sh substitutes __SENTINEL_TFM_IMAGE__.
 # Docs: ../nvidia-tfm/OCP-1GPU.md
 #

@@ -23,10 +23,11 @@ dist/
 **/.DS_Store
 .ipynb_checkpoints/
 
-# NVIDIA TFM checkpoint + local Containerfile / serve_embeddings.py (~55MB weights).
-# Not committed — bake with: ./scripts/build-push-images.sh --tfm → :latest
-# Deploy --rhoai defaults to quay.io/shailendra14k/casino-tfm-embed:latest
-model/decoder-foundation-model/
+# NVIDIA TFM upstream checkpoint (~55MB weights). Folder kept via .gitkeep;
+# tracked bake sources: model/casino-tfm-embed/{Containerfile,serve_embeddings.py}
+# Bake: ./scripts/build-push-images.sh --tfm → quay.io/.../casino-tfm-embed:latest
+model/decoder-foundation-model/*
+!model/decoder-foundation-model/.gitkeep
 
 # Do NOT ignore .dockerignore — it must be committed so OpenShift/docker
 # builds exclude the same paths for everyone (same role as this file).
