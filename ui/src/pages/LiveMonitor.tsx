@@ -22,6 +22,14 @@ function when(v: unknown) {
   return s.slice(11, 19) || s
 }
 
+function formatScore(v: unknown) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  // Alerts store 0..1; show two decimals (e.g. 0.87)
+  if (n >= 0 && n <= 1) return n.toFixed(2)
+  return String(Math.round(n))
+}
+
 /** Shape used by the Investigation-desk Case Detail panel. */
 function alertFromCase(detail: any, row?: any | null) {
   const rawAlert = detail?.raw?.alert || {}
@@ -218,6 +226,7 @@ export default function LiveMonitor() {
         transaction_type: a.transaction_type || ev.transaction_type || ev.event_type || 'TRANSACTION',
         currency: a.currency || ev.currency || 'USD',
         created_at: a.created_at || ev.timestamp,
+        score: a.score ?? match?.risk?.final_score ?? a.risk_score ?? 0,
       }
     })
   }, [alerts, events])
@@ -300,8 +309,8 @@ export default function LiveMonitor() {
   const selectAlert = (a: any) => {
     const key = String(a.alert_id || a.event_id || a.transaction_id || '')
     if (!key) return
-    // Row click opens Case Detail and marks INVESTIGATING
-    loadCase(key, { markInvestigating: true, seed: a }).catch(console.error)
+    // Row click opens Case Detail only — status stays unchanged until Investigate
+    loadCase(key, { markInvestigating: false, seed: a }).catch(console.error)
   }
 
   const update = async (status: string) => {
@@ -309,7 +318,16 @@ export default function LiveMonitor() {
     if (!id || String(id).startsWith('CASE-')) return
     await api.patchAlert(id, { status })
     await refresh()
-    await loadCase(id)
+    await loadCase(id, { markInvestigating: false })
+  }
+
+  const startInvestigate = async () => {
+    const id = selected?.alert_id || caseDetail?.alert_id
+    if (!id || String(id).startsWith('CASE-')) return
+    await loadCase(id, {
+      markInvestigating: true,
+      seed: selected || alertRows.find((a) => a.alert_id === id),
+    })
   }
 
   const closeCase = () => {
@@ -375,7 +393,7 @@ export default function LiveMonitor() {
         </h2>
         <p>
           Realtime TxnIQ flags <strong>patterns</strong> as transactions stream in — click a row for
-          a plain-language case.
+          Case Detail, then use <strong>Investigate</strong> to take ownership.
         </p>
       </section>
 
@@ -389,6 +407,7 @@ export default function LiveMonitor() {
                 <th>Player</th>
                 <th>Type</th>
                 <th>Amount</th>
+                <th>Score</th>
                 <th>Rules</th>
                 <th>Status</th>
               </tr>
@@ -396,7 +415,7 @@ export default function LiveMonitor() {
             <tbody>
               {alertRows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="mono">
+                  <td colSpan={7} className="mono">
                     Waiting for alerts…
                   </td>
                 </tr>
@@ -430,6 +449,7 @@ export default function LiveMonitor() {
                       </td>
                       <td>{a.transaction_type || '—'}</td>
                       <td className="mono">{money(a.amount, a.currency)}</td>
+                      <td className="mono">{formatScore(a.score)}</td>
                       <td>{formatRuleNames(a.rule_hits || a.matched_rules)}</td>
                       <td>
                         <span
@@ -452,7 +472,9 @@ export default function LiveMonitor() {
           <div className="panel-head case-detail-head">
             <div>
               <h3>Case detail</h3>
-              {!selected && !caseLoading && <p className="muted">Select an alert row to investigate.</p>}
+              {!selected && !caseLoading && (
+                <p className="muted">Select an alert row to open Case Detail.</p>
+              )}
             </div>
             {selected && (
               <div className="case-tabs">
@@ -539,7 +561,13 @@ export default function LiveMonitor() {
               )}
 
               <div className="btn-row">
-                <Link className="btn" to={`/network/${selected.alert_id}`}>
+                {String(caseDetail?.status || selected?.status || 'OPEN').toUpperCase() !==
+                  'INVESTIGATING' && (
+                  <button type="button" className="btn" onClick={() => startInvestigate()}>
+                    Investigate
+                  </button>
+                )}
+                <Link className="btn secondary" to={`/network/${selected.alert_id}`}>
                   See linked accounts
                 </Link>
                 <button type="button" className="btn secondary" onClick={() => update('ESCALATED')}>
