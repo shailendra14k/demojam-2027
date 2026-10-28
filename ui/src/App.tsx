@@ -13,11 +13,13 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden>TX</div>
-          <div className="brand-copy">
-            <h1>Realtime TxnIQ</h1>
-            <span>Real-time transaction pattern intelligence · Red Hat OpenShift</span>
-          </div>
+          <NavLink to="/" end className="brand-link" aria-label="Realtime TxnIQ home">
+            <img
+              className="brand-logo"
+              src="/txniq-lockup-light-bg.svg"
+              alt="Realtime TxnIQ — The Event-to-Intelligence Blueprint"
+            />
+          </NavLink>
         </div>
         <nav className="nav">
           <NavLink to="/" end>Dashboard</NavLink>

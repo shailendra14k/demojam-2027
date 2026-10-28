@@ -64,38 +64,30 @@ body {
   flex-direction: row;
   align-items: center;
   gap: 0.75rem;
+  min-width: 0;
 }
-.brand-mark {
-  width: 2.25rem;
-  height: 2.25rem;
-  border-radius: 0.25rem;
-  background: var(--accent);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
-  flex-shrink: 0;
-}
-.brand-copy {
+.brand-link {
   display: flex;
-  flex-direction: column;
-  gap: 0.05rem;
+  align-items: center;
+  text-decoration: none;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
 }
-.brand h1 {
-  margin: 0;
-  font-size: 1.15rem;
-  letter-spacing: -0.01em;
-  font-weight: 700;
-  font-family: var(--display);
-  color: var(--ink);
+.brand-link:hover,
+.brand-link.active {
+  color: inherit;
+  border: none !important;
+  background: transparent !important;
+  font-weight: inherit;
 }
-.brand span {
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-family: var(--font);
+.brand-logo {
+  display: block;
+  height: 2.5rem;
+  width: auto;
+  max-width: min(280px, 42vw);
+  object-fit: contain;
+  object-position: left center;
 }
 
 .nav {
