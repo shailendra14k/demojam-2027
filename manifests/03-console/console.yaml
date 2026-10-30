@@ -1,10 +1,17 @@
 # Placeholders __CLUSTER_DOMAIN__ and __NAMESPACE__ are replaced by deploy.sh.
+# Streams Console shows Kafka + Connect only for clusters listed below.
+# Connectors tab stays empty unless kafkaConnectClusters points at the Connect REST API.
 apiVersion: console.streamshub.github.com/v1alpha1
 kind: Console
 metadata:
   name: sentinel-console
 spec:
   hostname: sentinel-console.__CLUSTER_DOMAIN__
+  # Embedded Prometheus (operator deploys *-prometheus-*) for broker utilization charts.
+  # Needs Strimzi Kafka metrics (tcp-prometheus) on the brokers to populate graphs.
+  metricsSources:
+    - name: sentinel-console-prometheus
+      type: embedded
   kafkaClusters:
     - name: sentinel-kafka
       namespace: __NAMESPACE__
@@ -12,3 +19,12 @@ spec:
       credentials:
         kafkaUser:
           name: console-user
+      metricsSource: sentinel-console-prometheus
+  kafkaConnectClusters:
+    - name: sentinel-connect
+      namespace: __NAMESPACE__
+      # Strimzi Connect REST API (no auth in this demo)
+      url: http://sentinel-connect-connect-api.__NAMESPACE__.svc:8083
+      # Must be namespace/name (same key as kafkaClusters above) or UI Connectors filter stays empty
+      kafkaClusters:
+        - __NAMESPACE__/sentinel-kafka

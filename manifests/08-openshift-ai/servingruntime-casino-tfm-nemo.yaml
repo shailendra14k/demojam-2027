@@ -17,12 +17,12 @@ metadata:
     opendatahub.io/dashboard: "true"
     app.kubernetes.io/part-of: casino-sentinel
   annotations:
-    openshift.io/display-name: Casino Sentinel TFM (NeMo)
+    openshift.io/display-name: Realtime TxnIQ TFM (NeMo)
     # Required for ODH/RHOAI Deployments table "Deployment resource" column.
     # Use template-display-name only — do NOT set template-name unless a matching
     # Template CR exists in Settings → Serving runtimes (else UI shows
     # "template is no longer available").
-    opendatahub.io/template-display-name: Casino Sentinel TFM (NeMo)
+    opendatahub.io/template-display-name: Realtime TxnIQ TFM (NeMo)
     opendatahub.io/serving-runtime-scope: project
     opendatahub.io/apiProtocol: REST
     opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'

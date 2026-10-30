@@ -19,7 +19,7 @@ metadata:
     app.kubernetes.io/part-of: casino-sentinel
     app: tfm-embed
   annotations:
-    openshift.io/display-name: Casino TFM embeddings
+    openshift.io/display-name: Realtime TxnIQ TFM embeddings
     serving.kserve.io/deploymentMode: RawDeployment
     serving.knative.openshift.io/enablePassthrough: "true"
     serving.kserve.io/stop: "false"

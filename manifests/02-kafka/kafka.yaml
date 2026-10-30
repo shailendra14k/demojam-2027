@@ -67,6 +67,13 @@ spec:
       min.insync.replicas: 1
       auto.create.topics.enable: "false"
       num.partitions: 3
+    # Exposes broker metrics on container port tcp-prometheus for Streams Console charts.
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: kafka-metrics
+          key: kafka-metrics-config.yml
   entityOperator:
     topicOperator: {}
     userOperator: {}

@@ -577,6 +577,7 @@ run_sql "${SCRIPT_DIR}/sql/01-init.sql"
 run_sql "${SCRIPT_DIR}/sql/02-seed.sql"
 ok "Database initialized"
 
+apply "${MANIFESTS}/02-kafka/kafka-metrics-config.yaml"
 apply "${MANIFESTS}/02-kafka/kafka.yaml"
 resolve_app_images
 ok "App images from Quay (no sentinel-python / sentinel-ui BuildConfig)"

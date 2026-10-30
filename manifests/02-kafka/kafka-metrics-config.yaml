@@ -1,0 +1,87 @@
+# JMX Prometheus exporter rules for Strimzi Kafka + Kafka Connect.
+# Referenced by Kafka.spec.kafka.metricsConfig and KafkaConnect.spec.metricsConfig.
+# Streams Console embedded Prometheus scrapes pods with port name tcp-prometheus.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-metrics
+  namespace: casino-sentinel
+  labels:
+    app: strimzi
+data:
+  kafka-metrics-config.yml: |
+    lowercaseOutputName: true
+    rules:
+    - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)><>Value
+      name: kafka_server_$1_$2
+      type: GAUGE
+      labels:
+        clientId: "$3"
+        topic: "$4"
+        partition: "$5"
+    - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), brokerHost=(.+), brokerPort=(.+)><>Value
+      name: kafka_server_$1_$2
+      type: GAUGE
+      labels:
+        clientId: "$3"
+        broker: "$4:$5"
+    - pattern: kafka.server<type=(.+), name=(.+)><>Value
+      name: kafka_server_$1_$2
+      type: GAUGE
+    - pattern: kafka.controller<type=(.+), name=(.+)><>Value
+      name: kafka_controller_$1_$2
+      type: GAUGE
+    - pattern: kafka.network<type=(.+), name=(.+)><>Value
+      name: kafka_network_$1_$2
+      type: GAUGE
+    - pattern: kafka.network<type=(.+), name=(.+)PerSec, request=(.+)><>Count
+      name: kafka_network_$1_$2_total
+      type: COUNTER
+      labels:
+        request: "$3"
+    - pattern: kafka.log<type=(.+), name=(.+)><>Value
+      name: kafka_log_$1_$2
+      type: GAUGE
+    - pattern: kafka.cluster<type=(.+), name=(.+), topic=(.+), partition=(.+)><>Value
+      name: kafka_cluster_$1_$2
+      type: GAUGE
+      labels:
+        topic: "$3"
+        partition: "$4"
+    - pattern: java.lang<type=(.*)>
+    - pattern: java.lang<type=(.+), name=(.+)><(.+)
+      name: java_lang_$1_$3_$2
+    - pattern: java.lang<type=(.+), name=(.+)><>
+      name: java_lang_$1_$2
+  connect-metrics-config.yml: |
+    lowercaseOutputName: true
+    rules:
+    - pattern: kafka.connect<type=connect-worker-metrics><>([^:]+)
+      name: kafka_connect_worker_$1
+      type: GAUGE
+    - pattern: kafka.connect<type=connect-worker-rebalance-metrics><>([^:]+)
+      name: kafka_connect_worker_rebalance_$1
+      type: GAUGE
+    - pattern: kafka.connect<type=connector-metrics, connector=(.+)><>([^:]+)
+      name: kafka_connect_connector_$2
+      type: GAUGE
+      labels:
+        connector: "$1"
+    - pattern: kafka.connect<type=connector-task-metrics, connector=(.+), task=(.+)><>([^:]+)
+      name: kafka_connect_connector_task_$3
+      type: GAUGE
+      labels:
+        connector: "$1"
+        task: "$2"
+    - pattern: kafka.connect.mirror<type=(.+), target=(.+), source=(.+), name=(.+)><>(Count|Value|OneMinuteRate)
+      name: kafka_connect_mirror_$4_$6
+      type: GAUGE
+      labels:
+        type: "$1"
+        target: "$2"
+        source: "$3"
+    - pattern: java.lang<type=(.*)>
+    - pattern: java.lang<type=(.+), name=(.+)><(.+)
+      name: java_lang_$1_$3_$2
+    - pattern: java.lang<type=(.+), name=(.+)><>
+      name: java_lang_$1_$2
