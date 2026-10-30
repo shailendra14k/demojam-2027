@@ -8,7 +8,7 @@ Real-time transaction pattern intelligence on OpenShift: PostgreSQL → Debezium
 
 ### Step 1 — Create the lab
 
-Order the Red Hat OpenShift AI 3 demo lab:
+Order the Red Hat OpenShift AI 3 demo lab from below link:
 
 [https://catalog.demo.redhat.com/catalog/babylon-catalog-prod?item=babylon-catalog-prod/published.openshift-ai-v3.prod&utm_source=webapp&utm_medium=share-link](https://catalog.demo.redhat.com/catalog/babylon-catalog-prod?item=babylon-catalog-prod/published.openshift-ai-v3.prod&utm_source=webapp&utm_medium=share-link)
 
@@ -28,8 +28,6 @@ No TFM training. Inference uses `quay.io/shailendra14k/casino-tfm-embed:latest` 
 
 ---
 
-
-
 ## Destroy
 
 ```bash
@@ -40,8 +38,6 @@ Defaults: insecure login, **delete namespace** `casino-sentinel`, and **uninstal
 Opt out: `--keep-namespace`, `--keep-operators`, `--secure`.
 
 ---
-
-
 
 ## Architecture
 
@@ -85,16 +81,13 @@ Score weights (ConfigMap `casino-config`): **Rules 45% · XGBoost (ML) 35% · TF
 By default (TFM on), `sentinel-ml-engine` tokenizes on CPU and calls the GPU InferenceService  
 `http://tfm-embed-predictor.<ns>.svc:8080/v1/embeddings` (`TFM_MODE=http`, `AI_MODE=nvidia`).
 
-
 | Model / signal | Role                                           | How                                                                               |
 | -------------- | ---------------------------------------------- | --------------------------------------------------------------------------------- |
 | **Rules**      | Deterministic compliance (CTR, structuring, …) | `sentinel-aml-rules`                                                              |
 | **XGBoost**    | Supervised AML classifier                      | `model/artifacts/*.joblib` via `sentinel.aml_model` in `sentinel-ml-engine` (CPU) |
 | **NVIDIA TFM** | 512-d transaction embeddings                   | Default `TFM_MODE=hashed` (CPU); GPU: `TFM_MODE=http` + `casino-tfm-embed:latest` |
 
-
 Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](https://github.com/NVIDIA-AI-Blueprints/transaction-foundation-model).
-
 
 | Env               | Use                                    |
 | ----------------- | -------------------------------------- |
@@ -103,17 +96,11 @@ Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](http
 | `AI_MODE=mock`    | Mock scoring (`--no-rhoai`)            |
 | `AI_MODE=nvidia`  | Default demo; TFM HTTP embeddings      |
 
-
 ---
-
-
 
 ## Reference
 
-
-
 ### Image sources
-
 
 | Directory                                                        | Image                                           | Runs as                            |
 | ---------------------------------------------------------------- | ----------------------------------------------- | ---------------------------------- |
@@ -121,11 +108,7 @@ Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](http
 | `ui/` (`ui/Containerfile`)                                       | `quay.io/shailendra14k/sentinel-ui:latest`      | `sentinel-ui`                      |
 | `model/casino-tfm-embed/` + weights in `decoder-foundation-model/` (gitignored) | `quay.io/shailendra14k/casino-tfm-embed:latest` | InferenceService `tfm-embed` (GPU) |
 
-
-
-
 ### SQL
-
 
 | File                              | Role                                                  |
 | --------------------------------- | ----------------------------------------------------- |
@@ -134,13 +117,9 @@ Official TFM blueprint: [NVIDIA-AI-Blueprints/transaction-foundation-model](http
 | `sql/02-seed.sql`                 | Demo players                                          |
 | `sql/scenarios/`                  | Demo scenario payloads (also baked into python image) |
 
-
-
-
 ### Manifests (order)
 
 Order matches `deploy.sh` (not directory sort). Optional steps noted.
-
 
 | #   | When                                   | File                                                            | Creates                                               |
 | --- | -------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------- |
@@ -165,15 +144,12 @@ Order matches `deploy.sh` (not directory sort). Optional steps noted.
 | 18  | default (skip with `--no-rhoai`)       | `manifests/08-openshift-ai/servingruntime-casino-tfm-nemo.yaml` | ServingRuntime `casino-tfm-nemo`                      |
 | 19  | default (skip with `--no-rhoai`)       | `manifests/08-openshift-ai/inferenceservice-tfm-embed.yaml`     | InferenceService `tfm-embed`                          |
 
-
 Notes:
 
 - Debezium **connector** (step 17) is applied **after** apps, once Kafka Connect is Ready — not with the Connect CR.
 - App images come from Quay (`:latest`); there is no `manifests/05-builds/` for python/ui.
 
 ---
-
-
 
 ## [OPTIONAL] Build app images (Quay)
 
@@ -196,12 +172,9 @@ chmod +x scripts/build-push-images.sh
 ./scripts/build-push-images.sh --tfm    # also casino-tfm-embed:latest
 ```
 
-
-
 ## Deploy logs
 
-<details open>
-<summary><strong>Deploy run output</strong> (collapse / expand — long log scrolls inside the box)</summary>
+**Deploy run output** (collapse / expand — long log scrolls inside the box)
 
 ```text
 ➜  demojam-2027 git:(main) ✗ ./deploy.sh --token=sha256~... --server=https://api.ocp.<name>.opentlc.com:6443
@@ -510,16 +483,11 @@ Demo: open the UI → Demo Controls / Start Scenario (structuring / rapid-wire /
 
 ```
 
-</details>
-
-
-
 
 
 ## Destroy logs
 
-<details open>
-<summary><strong>Destroy run output</strong> (collapse / expand — long log scrolls inside the box)</summary>
+**Destroy run output** (collapse / expand — long log scrolls inside the box)
 
 ```text
 
@@ -600,7 +568,5 @@ clusterserviceversion.operators.coreos.com "amqstreams.v3.2.1-14" deleted
 Destroy complete (namespace_delete=true operators_removed=true).
 
 ```
-
-</details>
 
 
